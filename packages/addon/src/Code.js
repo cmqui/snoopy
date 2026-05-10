@@ -136,7 +136,7 @@ function showIpLog(e) {
       var prefix = event.deliveryPath === 'gmail_proxy' ? '* ' : '';
       var ipDisplay = event.deliveryPath === 'gmail_proxy'
         ? escapeHtml_(prefix + event.ip)
-        : '<a href="https://iplocation.io/' + encodeURIComponent(event.ip) + '">' + escapeHtml_(event.ip) + '</a>';
+        : '<a href="https://iplocation.io/ip/' + encodeURIComponent(event.ip) + '">' + escapeHtml_(event.ip) + '</a>';
       section.addWidget(
         CardService.newTextParagraph()
           .setText(ipDisplay + '<br>Logged at: ' + escapeHtml_(event.occurredAt))
