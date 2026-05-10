@@ -30,19 +30,13 @@ function onHomepage() {
     .build();
 }
 
-function onContextual() {
-  var event = arguments.length ? arguments[0] : null;
-  var threadId = event && event.gmail && event.gmail.threadId;
-  if (!threadId) {
+function onContextual(e) {
+  var trackedDetail = findTrackedMessageForCurrentContext_(e);
+  if (!trackedDetail) {
     return onHomepage();
   }
 
-  var lookup = fetchTrackedMessageForThread_(threadId);
-  if (!lookup.message) {
-    return onHomepage();
-  }
-
-  return buildMessageDetailCard_(lookup.message);
+  return buildMessageDetailCard_(trackedDetail);
 }
 
 function onCompose(e) {
@@ -176,6 +170,56 @@ function fetchMessageDetail_(messageId) {
 
 function fetchTrackedMessageForThread_(threadId) {
   return callBackend_('/api/v1/threads/' + encodeURIComponent(threadId) + '/message', 'get');
+}
+
+function findTrackedMessageForCurrentContext_(e) {
+  var directMessageId = extractTrackedMessageIdFromCurrentMessage_(e);
+  if (directMessageId) {
+    return fetchMessageDetail_(directMessageId);
+  }
+
+  var threadId = e && e.gmail && e.gmail.threadId;
+  if (!threadId) {
+    return null;
+  }
+
+  var lookup = fetchTrackedMessageForThread_(threadId);
+  return lookup.message || null;
+}
+
+function extractTrackedMessageIdFromCurrentMessage_(e) {
+  if (!e || !e.gmail || !e.gmail.accessToken || !e.gmail.messageId) {
+    return null;
+  }
+
+  GmailApp.setCurrentMessageAccessToken(e.gmail.accessToken);
+  var message = GmailApp.getMessageById(e.gmail.messageId);
+  if (!message) {
+    return null;
+  }
+
+  var body = message.getBody();
+  var match = body && body.match(/\/t\/([^"']+)\.gif/);
+  if (!match || !match[1]) {
+    return null;
+  }
+
+  return decodeTrackedMessageIdFromPixelToken_(decodeURIComponent(match[1]));
+}
+
+function decodeTrackedMessageIdFromPixelToken_(signedToken) {
+  var payloadSegment = signedToken.split('.')[0];
+  if (!payloadSegment) {
+    return null;
+  }
+
+  try {
+    var payloadJson = Utilities.newBlob(Utilities.base64DecodeWebSafe(payloadSegment)).getDataAsString();
+    var payload = JSON.parse(payloadJson);
+    return payload.trackedMessageId || null;
+  } catch (error) {
+    return null;
+  }
 }
 
 function callBackend_(path, method, body) {

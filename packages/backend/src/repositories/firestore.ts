@@ -111,7 +111,9 @@ export class FirestoreTrackingRepository implements TrackingRepository {
     }
 
     const snapshot = await query.get();
-    const messages = snapshot.docs.map((doc) => doc.data() as TrackedMessage);
+    const messages = snapshot.docs
+      .map((doc) => doc.data() as TrackedMessage)
+      .sort(compareMessagesByMostRecentActivity);
 
     return Promise.all(messages.map(async (message) => {
       const recipientsSnapshot = await this.collection("tracked_recipients")
@@ -154,4 +156,10 @@ export class FirestoreTrackingRepository implements TrackingRepository {
   private collection(name: FirestoreCollections) {
     return this.firestore.collection(name);
   }
+}
+
+function compareMessagesByMostRecentActivity(a: TrackedMessage, b: TrackedMessage): number {
+  const aKey = a.sentAt ?? a.createdAt;
+  const bKey = b.sentAt ?? b.createdAt;
+  return bKey.localeCompare(aKey);
 }

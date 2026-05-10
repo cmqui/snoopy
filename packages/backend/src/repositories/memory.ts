@@ -79,7 +79,7 @@ export class InMemoryTrackingRepository implements TrackingRepository {
   public async listMessagesByOwner(ownerUserId: string, status?: TrackedMessage["status"]): Promise<MessageWithRecipients[]> {
     const messages = [...this.messages.values()]
       .filter((message) => message.ownerUserId === ownerUserId && (!status || message.status === status))
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      .sort(compareMessagesByMostRecentActivity);
 
     return messages.map((message) => ({
       message,
@@ -108,4 +108,10 @@ export class InMemoryTrackingRepository implements TrackingRepository {
       .filter((event) => event.trackedRecipientId === recipientId)
       .sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
   }
+}
+
+function compareMessagesByMostRecentActivity(a: TrackedMessage, b: TrackedMessage): number {
+  const aKey = a.sentAt ?? a.createdAt;
+  const bKey = b.sentAt ?? b.createdAt;
+  return bKey.localeCompare(aKey);
 }
