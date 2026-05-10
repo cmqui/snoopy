@@ -341,9 +341,11 @@ function buildRecipientHeadline_(countedCount, unconfirmedCount, confidencePerce
 }
 
 function buildRecipientLabel_(recipient, countedEvents, unconfirmedEvents) {
+  var firstCountedActivity = countedEvents.length ? countedEvents[0].occurredAt : 'Not yet';
+  var lastCountedActivity = countedEvents.length ? countedEvents[countedEvents.length - 1].occurredAt : 'Not yet';
   var parts = [
-    'First counted activity: ' + escapeHtml_(recipient.firstOpenedAt || 'Not yet'),
-    'Last counted activity: ' + escapeHtml_(recipient.lastOpenedAt || 'Not yet'),
+    'First counted activity: ' + escapeHtml_(firstCountedActivity),
+    'Last counted activity: ' + escapeHtml_(lastCountedActivity),
     'Last counted IP: ' + escapeHtml_(recipient.lastOpenIp || 'Not yet')
   ];
   if (unconfirmedEvents.length) {
