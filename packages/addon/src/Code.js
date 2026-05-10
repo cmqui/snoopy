@@ -134,10 +134,12 @@ function showIpLog(e) {
   } else {
     events.forEach(function(event) {
       var prefix = event.deliveryPath === 'gmail_proxy' ? '* ' : '';
+      var ipDisplay = event.deliveryPath === 'gmail_proxy'
+        ? escapeHtml_(prefix + event.ip)
+        : '<a href="https://iplocation.io/' + encodeURIComponent(event.ip) + '">' + escapeHtml_(event.ip) + '</a>';
       section.addWidget(
-        CardService.newDecoratedText()
-          .setText(prefix + event.ip)
-          .setBottomLabel('Logged at: ' + event.occurredAt)
+        CardService.newTextParagraph()
+          .setText(ipDisplay + '<br>Logged at: ' + escapeHtml_(event.occurredAt))
       );
     });
     section.addWidget(
