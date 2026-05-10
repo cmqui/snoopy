@@ -6,3 +6,4 @@ dist
 coverage
 .clasp.json
 *.tsbuildinfo
+client_secret*.json
