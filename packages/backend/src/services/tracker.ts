@@ -15,6 +15,7 @@ import type {
   PrepareTrackedMessageRequest,
   PrepareTrackedMessageResponse,
   RecipientInput,
+  ThreadLookupResponse,
   TrackedMessage,
   TrackedRecipient,
   UserRecord,
@@ -189,15 +190,38 @@ export class TrackerService {
     }
 
     const recipients = await Promise.all(
-      messageWithRecipients.recipients.map(async (recipient) => ({
-        ...recipient,
-        events: await this.repository.listEventsForRecipient(recipient.id),
-      })),
+      messageWithRecipients.recipients.map(async (recipient) => {
+        const events = await this.repository.listEventsForRecipient(recipient.id);
+        return {
+          ...recipient,
+          events,
+          confidencePercent: calculateConfidencePercent(events),
+        };
+      }),
     );
 
     return {
       message: messageWithRecipients.message,
+      confidencePercent: calculateMessageConfidencePercent(recipients.map((recipient) => recipient.confidencePercent)),
       recipients,
+    };
+  }
+
+  public async getMessageDetailByThreadId(
+    user: AuthenticatedUser,
+    threadId: string,
+  ): Promise<ThreadLookupResponse> {
+    const messages = await this.repository.listMessagesByOwner(user.id);
+    const match = messages
+      .filter(({ message }) => message.gmailThreadId === threadId)
+      .sort((a, b) => (b.message.sentAt ?? b.message.createdAt).localeCompare(a.message.sentAt ?? a.message.createdAt))[0];
+
+    if (!match) {
+      return { message: null };
+    }
+
+    return {
+      message: await this.getMessageDetail(user, match.message.id),
     };
   }
 
@@ -290,6 +314,7 @@ export class TrackerService {
         const detailRecipient: MessageRecipientDetailResponse = {
           ...updatedRecipient,
           events: [event],
+          confidencePercent: calculateConfidencePercent([event]),
         };
         await this.notificationService.sendFirstOpenNotification({
           owner,
@@ -362,6 +387,7 @@ async function buildSummary(
 
     return events.some((event) => event.disposition === "unconfirmed_gmail_proxy_activity");
   }).length;
+  const recipientConfidencePercents = eventLists.map((events) => calculateConfidencePercent(events));
 
   return {
     id: message.id,
@@ -371,5 +397,42 @@ async function buildSummary(
     recipientCount: recipients.length,
     openedRecipientCount: recipientsWithCountedActivity.length,
     unconfirmedRecipientCount,
+    confidencePercent: calculateMessageConfidencePercent(recipientConfidencePercents),
   };
+}
+
+function calculateMessageConfidencePercent(confidencePercents: number[]): number {
+  if (confidencePercents.length === 0) {
+    return 0;
+  }
+
+  return Math.round(confidencePercents.reduce((sum, value) => sum + value, 0) / confidencePercents.length);
+}
+
+function calculateConfidencePercent(events: OpenEvent[]): number {
+  const countedEvents = events.filter((event) => event.disposition === "counted");
+  const unconfirmedEvents = events.filter((event) => event.disposition === "unconfirmed_gmail_proxy_activity");
+  const ignoredEvents = events.filter((event) => event.disposition === "ignored_sender_or_prefetch");
+
+  if (countedEvents.length > 0) {
+    let confidence = 90;
+    if (unconfirmedEvents.length > 0) {
+      confidence += 5;
+    }
+    if (countedEvents.length > 1) {
+      confidence += Math.min(4, countedEvents.length - 1);
+    }
+    return Math.min(99, confidence);
+  }
+
+  if (unconfirmedEvents.length > 0) {
+    const proxyConfidenceByCount = [45, 60, 72, 80, 85];
+    return proxyConfidenceByCount[Math.min(unconfirmedEvents.length, proxyConfidenceByCount.length) - 1] ?? 85;
+  }
+
+  if (ignoredEvents.length > 0) {
+    return 5;
+  }
+
+  return 0;
 }

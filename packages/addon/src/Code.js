@@ -1,17 +1,6 @@
 function onHomepage() {
-  var me = fetchMe_();
   var items = fetchMessages_();
-  var section = CardService.newCardSection()
-    .addWidget(
-      CardService.newDecoratedText()
-        .setTopLabel('Signed in')
-        .setText(me.email)
-        .setBottomLabel('Allowlisted access confirmed.')
-    )
-    .addWidget(
-      CardService.newTextParagraph()
-        .setText('Tracked activity uses remote images. Gmail may proxy image requests, so some activity will be shown as unconfirmed proxy activity rather than a definite recipient read.')
-    );
+  var section = CardService.newCardSection();
 
   if (!items.length) {
     section.addWidget(
@@ -36,14 +25,24 @@ function onHomepage() {
     .setHeader(
       CardService.newCardHeader()
         .setTitle('Snoopy')
-        .setSubtitle('Tracked Gmail opens')
     )
     .addSection(section)
     .build();
 }
 
 function onContextual() {
-  return onHomepage();
+  var event = arguments.length ? arguments[0] : null;
+  var threadId = event && event.gmail && event.gmail.threadId;
+  if (!threadId) {
+    return onHomepage();
+  }
+
+  var lookup = fetchTrackedMessageForThread_(threadId);
+  if (!lookup.message) {
+    return onHomepage();
+  }
+
+  return buildMessageDetailCard_(lookup.message);
 }
 
 function onCompose(e) {
@@ -125,12 +124,21 @@ function applyTrackingToDraft(e) {
 function showMessageDetail(e) {
   var messageId = e.parameters.messageId;
   var detail = fetchMessageDetail_(messageId);
+  return buildMessageDetailResponse_(detail);
+}
+
+function buildMessageDetailResponse_(detail) {
+  var nav = CardService.newNavigation().pushCard(buildMessageDetailCard_(detail));
+  return CardService.newActionResponseBuilder().setNavigation(nav).build();
+}
+
+function buildMessageDetailCard_(detail) {
   var section = CardService.newCardSection()
     .addWidget(
       CardService.newDecoratedText()
         .setTopLabel('Subject')
         .setText(detail.message.subject || '(No subject)')
-        .setBottomLabel('Status: ' + detail.message.status)
+        .setBottomLabel('Status: ' + detail.message.status + ' • Confidence: ' + detail.confidencePercent + '%')
     );
 
   detail.recipients.forEach(function(recipient) {
@@ -143,19 +151,15 @@ function showMessageDetail(e) {
     section.addWidget(
       CardService.newDecoratedText()
         .setTopLabel(recipient.email + ' (' + recipient.recipientType.toUpperCase() + ')')
-        .setText(buildRecipientHeadline_(countedEvents.length, unconfirmedEvents.length))
+        .setText(buildRecipientHeadline_(countedEvents.length, unconfirmedEvents.length, recipient.confidencePercent))
         .setBottomLabel(buildRecipientLabel_(recipient, countedEvents, unconfirmedEvents))
     );
   });
 
-  var nav = CardService.newNavigation().pushCard(
-    CardService.newCardBuilder()
-      .setHeader(CardService.newCardHeader().setTitle('Tracked email'))
-      .addSection(section)
-      .build()
-  );
-
-  return CardService.newActionResponseBuilder().setNavigation(nav).build();
+  return CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle('Tracked email'))
+    .addSection(section)
+    .build();
 }
 
 function fetchMe_() {
@@ -168,6 +172,10 @@ function fetchMessages_() {
 
 function fetchMessageDetail_(messageId) {
   return callBackend_('/api/v1/messages/' + encodeURIComponent(messageId), 'get');
+}
+
+function fetchTrackedMessageForThread_(threadId) {
+  return callBackend_('/api/v1/threads/' + encodeURIComponent(threadId) + '/message', 'get');
 }
 
 function callBackend_(path, method, body) {
@@ -228,6 +236,7 @@ function normalizeComposeRecipients_(entries, recipientType) {
 function formatSummary_(item) {
   var parts = [
     'Status: ' + item.status,
+    'Confidence: ' + item.confidencePercent + '%',
     'Recipients with counted activity: ' + item.openedRecipientCount + '/' + item.recipientCount
   ];
   if (item.unconfirmedRecipientCount) {
@@ -236,20 +245,21 @@ function formatSummary_(item) {
   return parts.join(' • ');
 }
 
-function buildRecipientHeadline_(countedCount, unconfirmedCount) {
+function buildRecipientHeadline_(countedCount, unconfirmedCount, confidencePercent) {
   if (countedCount > 0) {
-    return 'Likely opened / counted activity: ' + countedCount;
+    return 'Likely opened: ' + confidencePercent + '% confidence';
   }
   if (unconfirmedCount > 0) {
-    return 'Unconfirmed Gmail proxy activity: ' + unconfirmedCount;
+    return 'Unconfirmed proxy activity: ' + confidencePercent + '% confidence';
   }
-  return 'No tracked activity yet';
+  return 'No tracked activity yet: ' + confidencePercent + '% confidence';
 }
 
 function buildRecipientLabel_(recipient, countedEvents, unconfirmedEvents) {
   var parts = [
     'First counted activity: ' + (recipient.firstOpenedAt || 'Not yet'),
-    'Last counted IP: ' + (recipient.lastOpenIp || 'Not yet')
+    'Last counted IP: ' + (recipient.lastOpenIp || 'Not yet'),
+    'Confidence score: ' + recipient.confidencePercent + '%'
   ];
   if (unconfirmedEvents.length) {
     parts.push('Unconfirmed Gmail proxy activity: ' + unconfirmedEvents.length);

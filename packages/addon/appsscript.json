@@ -14,7 +14,7 @@
   "addOns": {
     "common": {
       "name": "Snoopy",
-      "logoUrl": "https://files.catbox.moe/rj3ope.jpg",
+      "logoUrl": "https://files.catbox.moe/ix7ntq.jpg",
       "homepageTrigger": {
         "runFunction": "onHomepage"
       }

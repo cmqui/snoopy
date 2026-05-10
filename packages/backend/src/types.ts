@@ -104,15 +104,22 @@ export interface MessageSummaryResponse {
   recipientCount: number;
   openedRecipientCount: number;
   unconfirmedRecipientCount: number;
+  confidencePercent: number;
 }
 
 export interface MessageRecipientDetailResponse extends TrackedRecipient {
   events: OpenEvent[];
+  confidencePercent: number;
 }
 
 export interface MessageDetailResponse {
   message: TrackedMessage;
+  confidencePercent: number;
   recipients: MessageRecipientDetailResponse[];
+}
+
+export interface ThreadLookupResponse {
+  message: MessageDetailResponse | null;
 }
 
 export interface PixelTokenPayload {

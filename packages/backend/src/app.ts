@@ -137,6 +137,22 @@ export function createApp(input: {
     }
   });
 
+  app.get("/api/v1/threads/:threadId/message", async (request, response, next) => {
+    try {
+      const user = requireAuth(request);
+      const allowlisted = input.allowedUserEmails.has(user.email);
+      await input.trackerService.syncUser(user, allowlisted);
+      if (!allowlisted) {
+        throw new HttpError(403, "User is not allowlisted");
+      }
+
+      const result = await input.trackerService.getMessageDetailByThreadId(user, request.params.threadId);
+      response.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/t/:token.gif", async (request, response, next) => {
     try {
       const token = request.params.token;

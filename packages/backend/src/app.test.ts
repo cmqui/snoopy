@@ -91,6 +91,7 @@ describe("backend app", () => {
 
     expect(markSentResponse.status).toBe(200);
     expect(markSentResponse.body.status).toBe("sent");
+    expect(markSentResponse.body.confidencePercent).toBe(0);
 
     const ignoredResponse = await request(app)
       .get(`/t/${token}.gif`)
@@ -131,6 +132,8 @@ describe("backend app", () => {
     expect(detailResponse.body.message.status).toBe("fully_opened");
     expect(detailResponse.body.recipients[0].openCount).toBe(1);
     expect(detailResponse.body.recipients[0].lastOpenIp).toBe("203.0.113.10");
+    expect(detailResponse.body.recipients[0].confidencePercent).toBe(95);
+    expect(detailResponse.body.confidencePercent).toBe(95);
     expect(detailResponse.body.recipients[0].events[0].disposition).toBe("ignored_sender_or_prefetch");
     expect(detailResponse.body.recipients[0].events[1].disposition).toBe("unconfirmed_gmail_proxy_activity");
     expect(detailResponse.body.recipients[0].events[2].disposition).toBe("counted");
@@ -146,4 +149,96 @@ describe("backend app", () => {
 
     expect(response.status).toBe(403);
   });
+
+  it("looks up tracked messages by gmail thread id", async () => {
+    const { app } = createTestServer();
+
+    const prepareResponse = await request(app)
+      .post("/api/v1/messages/prepare")
+      .set("x-test-user-email", "allowed@example.com")
+      .send({
+        subject: "Thread lookup",
+        htmlBody: "<p>Thread lookup</p>",
+        recipients: [
+          { email: "recipient@example.com", recipientType: "to" },
+        ],
+        draftContextType: "reply",
+        gmailThreadId: "thread-123",
+      });
+
+    const trackedMessageId = prepareResponse.body.trackedMessageId as string;
+
+    await request(app)
+      .post("/api/v1/messages/mark-sent")
+      .set("x-test-user-email", "allowed@example.com")
+      .send({
+        trackedMessageId,
+        gmailMessageId: "gmail-message-3",
+        gmailThreadId: "thread-123",
+        recipients: [
+          { email: "recipient@example.com", recipientType: "to" },
+        ],
+      });
+
+    const threadResponse = await request(app)
+      .get("/api/v1/threads/thread-123/message")
+      .set("x-test-user-email", "allowed@example.com");
+
+    expect(threadResponse.status).toBe(200);
+    expect(threadResponse.body.message.message.id).toBe(trackedMessageId);
+    expect(threadResponse.body.message.message.gmailThreadId).toBe("thread-123");
+  });
+
+  it("raises confidence as unconfirmed Gmail proxy activity accumulates", async () => {
+    const { app } = createTestServer();
+
+    const prepareResponse = await request(app)
+      .post("/api/v1/messages/prepare")
+      .set("x-test-user-email", "allowed@example.com")
+      .send({
+        subject: "Proxy only",
+        htmlBody: "<p>Proxy only</p>",
+        recipients: [
+          { email: "recipient@example.com", recipientType: "to" },
+        ],
+        draftContextType: "new",
+      });
+
+    const trackedMessageId = prepareResponse.body.trackedMessageId as string;
+    const instrumentedHtmlBody = prepareResponse.body.instrumentedHtmlBody as string;
+    const tokenMatch = instrumentedHtmlBody.match(/\/t\/([^"]+)\.gif/);
+    const token = decodeURIComponent(tokenMatch?.[1] ?? "");
+
+    await request(app)
+      .post("/api/v1/messages/mark-sent")
+      .set("x-test-user-email", "allowed@example.com")
+      .send({
+        trackedMessageId,
+        gmailMessageId: "gmail-message-2",
+        recipients: [
+          { email: "recipient@example.com", recipientType: "to" },
+        ],
+      });
+
+    await new Promise((resolve) => setTimeout(resolve, 11000));
+
+    await request(app)
+      .get(`/t/${token}.gif`)
+      .set("user-agent", "GoogleImageProxy")
+      .set("x-forwarded-for", "66.249.84.2");
+
+    await request(app)
+      .get(`/t/${token}.gif`)
+      .set("user-agent", "GoogleImageProxy")
+      .set("x-forwarded-for", "66.249.84.3");
+
+    const detailResponse = await request(app)
+      .get(`/api/v1/messages/${trackedMessageId}`)
+      .set("x-test-user-email", "allowed@example.com");
+
+    expect(detailResponse.status).toBe(200);
+    expect(detailResponse.body.recipients[0].confidencePercent).toBe(60);
+    expect(detailResponse.body.confidencePercent).toBe(60);
+    expect(detailResponse.body.recipients[0].openCount).toBe(0);
+  }, 15000);
 });
