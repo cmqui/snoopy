@@ -24,7 +24,7 @@ function onHomepage() {
   return CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
-        .setTitle('Snoopy')
+        .setTitle('Tracked Email Overview')
     )
     .addSection(section)
     .build();
