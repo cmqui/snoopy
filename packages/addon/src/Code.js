@@ -47,10 +47,18 @@ function onContextual() {
 }
 
 function onCompose(e) {
+  var extractedSubject = getComposeSubject_(e);
   var section = CardService.newCardSection()
     .addWidget(
       CardService.newTextParagraph()
         .setText('Apply tracking to the current draft. Snoopy appends hidden tracking pixels to the draft body. Accurate per-recipient attribution requires one recipient per sent message.')
+    )
+    .addWidget(
+      CardService.newTextInput()
+        .setFieldName('subjectInput')
+        .setTitle('Subject')
+        .setHint('Enter the email subject to store in Snoopy')
+        .setValue(extractedSubject)
     )
     .addWidget(
       CardService.newTextButton()
@@ -81,6 +89,7 @@ function onCompose(e) {
 
 function applyTrackingToDraft(e) {
   var recipients = getComposeRecipients_(e);
+  var subject = getFormInputValue_(e, 'subjectInput') || getComposeSubject_(e);
   if (!recipients.length) {
     return CardService.newActionResponseBuilder()
       .setNotification(
@@ -90,7 +99,7 @@ function applyTrackingToDraft(e) {
   }
 
   var prepareResponse = callBackend_('/api/v1/messages/prepare', 'post', {
-    subject: '',
+    subject: subject,
     htmlBody: '<!-- snoopy-tracking -->',
     recipients: recipients,
     draftContextType: e.gmail && e.gmail.threadId ? 'reply' : 'new',
@@ -125,11 +134,14 @@ function showMessageDetail(e) {
     );
 
   detail.recipients.forEach(function(recipient) {
+    var countedEvents = (recipient.events || []).filter(function(event) {
+      return event.disposition === 'counted';
+    });
     section.addWidget(
       CardService.newDecoratedText()
         .setTopLabel(recipient.email + ' (' + recipient.recipientType.toUpperCase() + ')')
-        .setText('Opened ' + recipient.openCount + ' time(s)')
-        .setBottomLabel(buildRecipientLabel_(recipient))
+        .setText('Counted tracking activity: ' + countedEvents.length)
+        .setBottomLabel(buildRecipientLabel_(recipient, countedEvents))
     );
   });
 
@@ -213,14 +225,33 @@ function normalizeComposeRecipients_(entries, recipientType) {
 function formatSummary_(item) {
   return [
     'Status: ' + item.status,
-    'Recipients: ' + item.openedRecipientCount + '/' + item.recipientCount + ' opened'
+    'Recipients with counted activity: ' + item.openedRecipientCount + '/' + item.recipientCount
   ].join(' • ');
 }
 
-function buildRecipientLabel_(recipient) {
+function buildRecipientLabel_(recipient, countedEvents) {
   var parts = [
-    'First open: ' + (recipient.firstOpenedAt || 'Not yet'),
-    'Last open IP: ' + (recipient.lastOpenIp || 'Not yet')
+    'First counted activity: ' + (recipient.firstOpenedAt || 'Not yet'),
+    'Last counted IP: ' + (recipient.lastOpenIp || 'Not yet')
   ];
+  var ignoredEvents = (recipient.events || []).filter(function(event) {
+    return event.disposition !== 'counted';
+  });
+  if (ignoredEvents.length) {
+    parts.push('Ignored likely sender/proxy fetches: ' + ignoredEvents.length);
+  }
   return parts.join(' • ');
+}
+
+function getComposeSubject_(e) {
+  var gmail = e.gmail || {};
+  return gmail.subject || (gmail.draftMetadata && gmail.draftMetadata.subject) || '';
+}
+
+function getFormInputValue_(e, fieldName) {
+  var inputs = e.commonEventObject && e.commonEventObject.formInputs;
+  var input = inputs && inputs[fieldName];
+  var stringInputs = input && input.stringInputs;
+  var values = stringInputs && stringInputs.value;
+  return values && values.length ? values[0] : '';
 }

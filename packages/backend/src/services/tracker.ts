@@ -5,6 +5,7 @@ import { buildDedupeKey, classifyDeliveryPath } from "../lib/proxy.js";
 import type { TrackingRepository } from "../repositories/types.js";
 import type {
   AuthenticatedUser,
+  EventDisposition,
   MarkSentRequest,
   MessageDetailResponse,
   MessageRecipientDetailResponse,
@@ -226,6 +227,11 @@ export class TrackerService {
     }
 
     const deliveryPath = classifyDeliveryPath(input.userAgent, input.ip);
+    const disposition = classifyEventDisposition({
+      message: messageWithRecipients.message,
+      deliveryPath,
+      occurredAt,
+    });
     const event: OpenEvent = {
       id: createId(),
       trackedMessageId: messageWithRecipients.message.id,
@@ -237,6 +243,7 @@ export class TrackerService {
       acceptLanguage: input.acceptLanguage,
       pixelTokenId: input.tokenId,
       deliveryPath,
+      disposition,
       dedupeKey,
       rawHeadersSubset: {
         referer: input.referer,
@@ -246,6 +253,10 @@ export class TrackerService {
     };
 
     await this.repository.createOpenEvent(event);
+
+    if (disposition !== "counted") {
+      return;
+    }
 
     const updatedRecipient: TrackedRecipient = {
       ...recipient,
@@ -311,6 +322,23 @@ function normalizeRecipients(recipients: RecipientInput[]): RecipientInput[] {
   }
 
   return normalized;
+}
+
+function classifyEventDisposition(input: {
+  message: TrackedMessage;
+  deliveryPath: "direct" | "gmail_proxy" | "unknown";
+  occurredAt: Date;
+}): EventDisposition {
+  const referenceTimestamp = input.message.sentAt ?? input.message.createdAt;
+  const referenceTime = Date.parse(referenceTimestamp);
+  const elapsedMs = Number.isNaN(referenceTime) ? Number.POSITIVE_INFINITY : input.occurredAt.getTime() - referenceTime;
+
+  // Early Gmail proxy fetches are often sender self-views or Gmail prefetches rather than a recipient read.
+  if (input.deliveryPath === "gmail_proxy" && elapsedMs < 2 * 60 * 1000) {
+    return "ignored_sender_or_prefetch";
+  }
+
+  return "counted";
 }
 
 function toSummary(message: TrackedMessage, recipients: TrackedRecipient[]): MessageSummaryResponse {

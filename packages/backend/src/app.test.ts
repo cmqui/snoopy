@@ -92,13 +92,13 @@ describe("backend app", () => {
     expect(markSentResponse.status).toBe(200);
     expect(markSentResponse.body.status).toBe("sent");
 
-    const openResponse = await request(app)
+    const ignoredResponse = await request(app)
       .get(`/t/${token}.gif`)
       .set("user-agent", "GoogleImageProxy")
       .set("x-forwarded-for", "66.249.84.1");
 
-    expect(openResponse.status).toBe(200);
-    expect(openResponse.header["content-type"]).toContain("image/gif");
+    expect(ignoredResponse.status).toBe(200);
+    expect(ignoredResponse.header["content-type"]).toContain("image/gif");
 
     const duplicateResponse = await request(app)
       .get(`/t/${token}.gif`)
@@ -107,6 +107,15 @@ describe("backend app", () => {
 
     expect(duplicateResponse.status).toBe(200);
 
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    const countedResponse = await request(app)
+      .get(`/t/${token}.gif`)
+      .set("user-agent", "Mozilla/5.0")
+      .set("x-forwarded-for", "203.0.113.10");
+
+    expect(countedResponse.status).toBe(200);
+
     const detailResponse = await request(app)
       .get(`/api/v1/messages/${trackedMessageId}`)
       .set("x-test-user-email", "allowed@example.com");
@@ -114,8 +123,9 @@ describe("backend app", () => {
     expect(detailResponse.status).toBe(200);
     expect(detailResponse.body.message.status).toBe("fully_opened");
     expect(detailResponse.body.recipients[0].openCount).toBe(1);
-    expect(detailResponse.body.recipients[0].lastOpenIp).toBe("66.249.84.1");
-    expect(detailResponse.body.recipients[0].events[0].deliveryPath).toBe("gmail_proxy");
+    expect(detailResponse.body.recipients[0].lastOpenIp).toBe("203.0.113.10");
+    expect(detailResponse.body.recipients[0].events[0].disposition).toBe("ignored_sender_or_prefetch");
+    expect(detailResponse.body.recipients[0].events[1].disposition).toBe("counted");
     expect(notifier.calls).toHaveLength(1);
   });
 

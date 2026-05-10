@@ -1,0 +1,57 @@
+name: Deploy Gmail Add-on
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "packages/addon/**"
+      - ".github/workflows/deploy-addon.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy-addon:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/addon
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install clasp
+        run: npm install -g @google/clasp
+
+      - name: Write clasp auth
+        env:
+          CLASP_AUTH_JSON: ${{ secrets.CLASP_AUTH_JSON }}
+        run: |
+          if [ -z "$CLASP_AUTH_JSON" ]; then
+            echo "Missing GitHub secret: CLASP_AUTH_JSON" >&2
+            exit 1
+          fi
+          printf '%s' "$CLASP_AUTH_JSON" > "$HOME/.clasprc.json"
+
+      - name: Write clasp project config
+        env:
+          APPS_SCRIPT_ID: ${{ secrets.APPS_SCRIPT_ID }}
+        run: |
+          if [ -z "$APPS_SCRIPT_ID" ]; then
+            echo "Missing GitHub secret: APPS_SCRIPT_ID" >&2
+            exit 1
+          fi
+          cat > .clasp.json <<EOF
+          {
+            "scriptId": "$APPS_SCRIPT_ID",
+            "rootDir": "."
+          }
+          EOF
+
+      - name: Push add-on sources
+        run: clasp push --force

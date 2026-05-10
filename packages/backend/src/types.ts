@@ -3,6 +3,7 @@ export type RecipientType = "to" | "cc";
 export type MessageStatus = "draft" | "sent" | "partially_opened" | "fully_opened";
 export type DeliveryPath = "direct" | "gmail_proxy" | "unknown";
 export type NotificationPreference = "first_open_email" | "off";
+export type EventDisposition = "counted" | "ignored_sender_or_prefetch";
 
 export interface UserRecord {
   id: string;
@@ -57,6 +58,7 @@ export interface OpenEvent {
   acceptLanguage: string | null;
   pixelTokenId: string;
   deliveryPath: DeliveryPath;
+  disposition: EventDisposition;
   dedupeKey: string;
   rawHeadersSubset: Record<string, string | null>;
 }
