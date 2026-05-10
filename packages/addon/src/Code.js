@@ -121,6 +121,41 @@ function showMessageDetail(e) {
   return buildMessageDetailResponse_(detail);
 }
 
+function showIpLog(e) {
+  var messageId = e.parameters.messageId;
+  var detail = fetchMessageDetail_(messageId);
+  var events = collectEventsForMessage_(detail);
+  var section = CardService.newCardSection();
+
+  if (!events.length) {
+    section.addWidget(
+      CardService.newTextParagraph().setText('No IPs logged yet.')
+    );
+  } else {
+    events.forEach(function(event) {
+      var prefix = event.deliveryPath === 'gmail_proxy' ? '* ' : '';
+      section.addWidget(
+        CardService.newDecoratedText()
+          .setText(prefix + event.ip)
+          .setBottomLabel('Logged at: ' + event.occurredAt)
+      );
+    });
+    section.addWidget(
+      CardService.newTextParagraph()
+        .setText('* likely Google proxy request')
+    );
+  }
+
+  var nav = CardService.newNavigation().pushCard(
+    CardService.newCardBuilder()
+      .setHeader(CardService.newCardHeader().setTitle('Logged IPs'))
+      .addSection(section)
+      .build()
+  );
+
+  return CardService.newActionResponseBuilder().setNavigation(nav).build();
+}
+
 function buildMessageDetailResponse_(detail) {
   var nav = CardService.newNavigation().pushCard(buildMessageDetailCard_(detail));
   return CardService.newActionResponseBuilder().setNavigation(nav).build();
@@ -143,6 +178,16 @@ function buildMessageDetailCard_(detail) {
         .setBottomLabel(buildRecipientLabel_(recipient, countedEvents, unconfirmedEvents))
     );
   });
+
+  section.addWidget(
+    CardService.newTextButton()
+      .setText('View logged IPs')
+      .setOnClickAction(
+        CardService.newAction()
+          .setFunctionName('showIpLog')
+          .setParameters({ messageId: detail.message.id })
+      )
+  );
 
   return CardService.newCardBuilder()
     .setHeader(CardService.newCardHeader().setTitle(subject))
@@ -322,6 +367,21 @@ function getFormInputValue_(e, fieldName) {
   var stringInputs = input && input.stringInputs;
   var values = stringInputs && stringInputs.value;
   return values && values.length ? values[0] : '';
+}
+
+function collectEventsForMessage_(detail) {
+  var events = [];
+  (detail.recipients || []).forEach(function(recipient) {
+    (recipient.events || []).forEach(function(event) {
+      events.push(event);
+    });
+  });
+
+  events.sort(function(a, b) {
+    return String(b.occurredAt).localeCompare(String(a.occurredAt));
+  });
+
+  return events;
 }
 
 function colorizeConfidence_(confidencePercent) {
