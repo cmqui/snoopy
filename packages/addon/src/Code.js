@@ -128,12 +128,7 @@ function buildMessageDetailResponse_(detail) {
 
 function buildMessageDetailCard_(detail) {
   var subject = detail.message.subject || '(No subject)';
-  var section = CardService.newCardSection()
-    .addWidget(
-      CardService.newDecoratedText()
-        .setTopLabel(buildPrimaryRecipientLabel_(detail.recipients))
-        .setText(subject)
-    );
+  var section = CardService.newCardSection();
 
   detail.recipients.forEach(function(recipient) {
     var countedEvents = (recipient.events || []).filter(function(event) {
@@ -144,7 +139,6 @@ function buildMessageDetailCard_(detail) {
     });
     section.addWidget(
       CardService.newDecoratedText()
-        .setTopLabel('Tracking details')
         .setText(buildRecipientHeadline_(countedEvents.length, unconfirmedEvents.length, recipient.confidencePercent))
         .setBottomLabel(buildRecipientLabel_(recipient, countedEvents, unconfirmedEvents))
     );
@@ -341,20 +335,6 @@ function colorizeConfidence_(confidencePercent) {
   }
 
   return '<font color="' + color + '"><b>' + confidencePercent + '%</b></font>';
-}
-
-function buildPrimaryRecipientLabel_(recipients) {
-  if (!recipients || !recipients.length) {
-    return 'Tracked email';
-  }
-
-  var recipient = recipients[0];
-  var label = recipient.email + ' (' + recipient.recipientType.toUpperCase() + ')';
-  if (recipients.length > 1) {
-    label += ' +' + (recipients.length - 1) + ' more';
-  }
-
-  return label;
 }
 
 function escapeHtml_(value) {
