@@ -130,9 +130,9 @@ function buildMessageDetailCard_(detail) {
   var section = CardService.newCardSection()
     .addWidget(
       CardService.newDecoratedText()
-        .setTopLabel('Subject')
+        .setTopLabel(buildPrimaryRecipientLabel_(detail.recipients))
         .setText(detail.message.subject || '(No subject)')
-        .setBottomLabel('Status: ' + detail.message.status + ' • Confidence: ' + colorizeConfidence_(detail.confidencePercent))
+        .setBottomLabel('Confidence: ' + colorizeConfidence_(detail.confidencePercent))
     );
 
   detail.recipients.forEach(function(recipient) {
@@ -144,7 +144,7 @@ function buildMessageDetailCard_(detail) {
     });
     section.addWidget(
       CardService.newDecoratedText()
-        .setTopLabel(recipient.email + ' (' + recipient.recipientType.toUpperCase() + ')')
+        .setTopLabel('Tracking details')
         .setText(buildRecipientHeadline_(countedEvents.length, unconfirmedEvents.length, recipient.confidencePercent))
         .setBottomLabel(buildRecipientLabel_(recipient, countedEvents, unconfirmedEvents))
     );
@@ -303,8 +303,7 @@ function buildRecipientLabel_(recipient, countedEvents, unconfirmedEvents) {
   var parts = [
     'First counted activity: ' + escapeHtml_(recipient.firstOpenedAt || 'Not yet'),
     'Last counted activity: ' + escapeHtml_(recipient.lastOpenedAt || 'Not yet'),
-    'Last counted IP: ' + escapeHtml_(recipient.lastOpenIp || 'Not yet'),
-    'Confidence score: ' + colorizeConfidence_(recipient.confidencePercent)
+    'Last counted IP: ' + escapeHtml_(recipient.lastOpenIp || 'Not yet')
   ];
   if (unconfirmedEvents.length) {
     parts.push('Unconfirmed Gmail proxy activity: ' + escapeHtml_(String(unconfirmedEvents.length)));
@@ -342,6 +341,20 @@ function colorizeConfidence_(confidencePercent) {
   }
 
   return '<font color="' + color + '"><b>' + confidencePercent + '%</b></font>';
+}
+
+function buildPrimaryRecipientLabel_(recipients) {
+  if (!recipients || !recipients.length) {
+    return 'Tracked email';
+  }
+
+  var recipient = recipients[0];
+  var label = recipient.email + ' (' + recipient.recipientType.toUpperCase() + ')';
+  if (recipients.length > 1) {
+    label += ' +' + (recipients.length - 1) + ' more';
+  }
+
+  return label;
 }
 
 function escapeHtml_(value) {
