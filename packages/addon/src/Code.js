@@ -127,12 +127,12 @@ function buildMessageDetailResponse_(detail) {
 }
 
 function buildMessageDetailCard_(detail) {
+  var subject = detail.message.subject || '(No subject)';
   var section = CardService.newCardSection()
     .addWidget(
       CardService.newDecoratedText()
         .setTopLabel(buildPrimaryRecipientLabel_(detail.recipients))
-        .setText(detail.message.subject || '(No subject)')
-        .setBottomLabel('Confidence: ' + colorizeConfidence_(detail.confidencePercent))
+        .setText(subject)
     );
 
   detail.recipients.forEach(function(recipient) {
@@ -151,7 +151,7 @@ function buildMessageDetailCard_(detail) {
   });
 
   return CardService.newCardBuilder()
-    .setHeader(CardService.newCardHeader().setTitle('Tracked email'))
+    .setHeader(CardService.newCardHeader().setTitle(subject))
     .addSection(section)
     .build();
 }
