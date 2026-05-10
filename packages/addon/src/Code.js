@@ -132,7 +132,7 @@ function buildMessageDetailCard_(detail) {
       CardService.newDecoratedText()
         .setTopLabel('Subject')
         .setText(detail.message.subject || '(No subject)')
-        .setBottomLabel('Status: ' + detail.message.status + ' • Confidence: ' + detail.confidencePercent + '%')
+        .setBottomLabel('Status: ' + detail.message.status + ' • Confidence: ' + colorizeConfidence_(detail.confidencePercent))
     );
 
   detail.recipients.forEach(function(recipient) {
@@ -280,7 +280,7 @@ function normalizeComposeRecipients_(entries, recipientType) {
 function formatSummary_(item) {
   var parts = [
     'Status: ' + item.status,
-    'Confidence: ' + item.confidencePercent + '%',
+    'Confidence: ' + colorizeConfidence_(item.confidencePercent),
     'Recipients with counted activity: ' + item.openedRecipientCount + '/' + item.recipientCount
   ];
   if (item.unconfirmedRecipientCount) {
@@ -291,30 +291,31 @@ function formatSummary_(item) {
 
 function buildRecipientHeadline_(countedCount, unconfirmedCount, confidencePercent) {
   if (countedCount > 0) {
-    return 'Likely opened: ' + confidencePercent + '% confidence';
+    return 'Likely opened: ' + colorizeConfidence_(confidencePercent) + ' confidence';
   }
   if (unconfirmedCount > 0) {
-    return 'Unconfirmed proxy activity: ' + confidencePercent + '% confidence';
+    return 'Unconfirmed proxy activity: ' + colorizeConfidence_(confidencePercent) + ' confidence';
   }
-  return 'No tracked activity yet: ' + confidencePercent + '% confidence';
+  return 'No tracked activity yet: ' + colorizeConfidence_(confidencePercent) + ' confidence';
 }
 
 function buildRecipientLabel_(recipient, countedEvents, unconfirmedEvents) {
   var parts = [
-    'First counted activity: ' + (recipient.firstOpenedAt || 'Not yet'),
-    'Last counted IP: ' + (recipient.lastOpenIp || 'Not yet'),
-    'Confidence score: ' + recipient.confidencePercent + '%'
+    'First counted activity: ' + escapeHtml_(recipient.firstOpenedAt || 'Not yet'),
+    'Last counted activity: ' + escapeHtml_(recipient.lastOpenedAt || 'Not yet'),
+    'Last counted IP: ' + escapeHtml_(recipient.lastOpenIp || 'Not yet'),
+    'Confidence score: ' + colorizeConfidence_(recipient.confidencePercent)
   ];
   if (unconfirmedEvents.length) {
-    parts.push('Unconfirmed Gmail proxy activity: ' + unconfirmedEvents.length);
+    parts.push('Unconfirmed Gmail proxy activity: ' + escapeHtml_(String(unconfirmedEvents.length)));
   }
   var ignoredEvents = (recipient.events || []).filter(function(event) {
     return event.disposition === 'ignored_sender_or_prefetch';
   });
   if (ignoredEvents.length) {
-    parts.push('Ignored likely sender/proxy fetches: ' + ignoredEvents.length);
+    parts.push('Ignored likely sender/proxy fetches: ' + escapeHtml_(String(ignoredEvents.length)));
   }
-  return parts.join(' • ');
+  return parts.join('<br>');
 }
 
 function getComposeSubject_(e) {
@@ -328,4 +329,24 @@ function getFormInputValue_(e, fieldName) {
   var stringInputs = input && input.stringInputs;
   var values = stringInputs && stringInputs.value;
   return values && values.length ? values[0] : '';
+}
+
+function colorizeConfidence_(confidencePercent) {
+  var color = '#B3261E';
+  if (confidencePercent >= 90) {
+    color = '#188038';
+  } else if (confidencePercent >= 70) {
+    color = '#B06000';
+  } else if (confidencePercent >= 40) {
+    color = '#C26401';
+  }
+
+  return '<font color="' + color + '"><b>' + confidencePercent + '%</b></font>';
+}
+
+function escapeHtml_(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
