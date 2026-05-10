@@ -3,7 +3,7 @@ export type RecipientType = "to" | "cc";
 export type MessageStatus = "draft" | "sent" | "partially_opened" | "fully_opened";
 export type DeliveryPath = "direct" | "gmail_proxy" | "unknown";
 export type NotificationPreference = "first_open_email" | "off";
-export type EventDisposition = "counted" | "ignored_sender_or_prefetch";
+export type EventDisposition = "counted" | "unconfirmed_gmail_proxy_activity" | "ignored_sender_or_prefetch";
 
 export interface UserRecord {
   id: string;
@@ -103,6 +103,7 @@ export interface MessageSummaryResponse {
   status: MessageStatus;
   recipientCount: number;
   openedRecipientCount: number;
+  unconfirmedRecipientCount: number;
 }
 
 export interface MessageRecipientDetailResponse extends TrackedRecipient {

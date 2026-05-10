@@ -171,12 +171,12 @@ export class TrackerService {
       status: "sent",
     });
 
-    return toSummary(updated, updatedRecipients);
+    return buildSummary(this.repository, updated, updatedRecipients);
   }
 
   public async listMessages(user: AuthenticatedUser, status?: TrackedMessage["status"]): Promise<MessageSummaryResponse[]> {
     const messages = await this.repository.listMessagesByOwner(user.id, status);
-    return messages.map(({ message, recipients }) => toSummary(message, recipients));
+    return Promise.all(messages.map(({ message, recipients }) => buildSummary(this.repository, message, recipients)));
   }
 
   public async getMessageDetail(user: AuthenticatedUser, messageId: string): Promise<MessageDetailResponse> {
@@ -254,17 +254,18 @@ export class TrackerService {
 
     await this.repository.createOpenEvent(event);
 
-    if (disposition !== "counted") {
+    if (disposition === "ignored_sender_or_prefetch") {
       return;
     }
 
+    const shouldCountTowardOpen = disposition === "counted";
     const updatedRecipient: TrackedRecipient = {
       ...recipient,
-      firstOpenedAt: recipient.firstOpenedAt ?? event.occurredAt,
-      lastOpenedAt: event.occurredAt,
-      openCount: recipient.openCount + 1,
-      lastOpenIp: input.ip,
-      lastOpenUserAgent: input.userAgent,
+      firstOpenedAt: shouldCountTowardOpen ? recipient.firstOpenedAt ?? event.occurredAt : recipient.firstOpenedAt,
+      lastOpenedAt: shouldCountTowardOpen ? event.occurredAt : recipient.lastOpenedAt,
+      openCount: shouldCountTowardOpen ? recipient.openCount + 1 : recipient.openCount,
+      lastOpenIp: shouldCountTowardOpen ? input.ip : recipient.lastOpenIp,
+      lastOpenUserAgent: shouldCountTowardOpen ? input.userAgent : recipient.lastOpenUserAgent,
     };
     await this.repository.updateRecipient(updatedRecipient);
 
@@ -283,7 +284,7 @@ export class TrackerService {
       status: messageStatus,
     });
 
-    if (updatedRecipient.notificationSentAt === null) {
+    if (shouldCountTowardOpen && updatedRecipient.notificationSentAt === null) {
       const owner = await this.repository.getUserByEmail(messageWithRecipients.message.fromEmail);
       if (owner && owner.notificationPreference === "first_open_email") {
         const detailRecipient: MessageRecipientDetailResponse = {
@@ -333,21 +334,42 @@ function classifyEventDisposition(input: {
   const referenceTime = Date.parse(referenceTimestamp);
   const elapsedMs = Number.isNaN(referenceTime) ? Number.POSITIVE_INFINITY : input.occurredAt.getTime() - referenceTime;
 
-  // Early Gmail proxy fetches are often sender self-views or Gmail prefetches rather than a recipient read.
-  if (input.deliveryPath === "gmail_proxy" && elapsedMs < 2 * 60 * 1000) {
+  // Very early Gmail proxy fetches are often sender self-views or immediate Gmail prefetches.
+  if (input.deliveryPath === "gmail_proxy" && elapsedMs < 10 * 1000) {
     return "ignored_sender_or_prefetch";
+  }
+
+  if (input.deliveryPath === "gmail_proxy") {
+    return "unconfirmed_gmail_proxy_activity";
   }
 
   return "counted";
 }
 
-function toSummary(message: TrackedMessage, recipients: TrackedRecipient[]): MessageSummaryResponse {
+async function buildSummary(
+  repository: TrackingRepository,
+  message: TrackedMessage,
+  recipients: TrackedRecipient[],
+): Promise<MessageSummaryResponse> {
+  const recipientsWithCountedActivity = recipients.filter((recipient) => recipient.firstOpenedAt !== null);
+  const eventLists = await Promise.all(
+    recipients.map((recipient) => repository.listEventsForRecipient(recipient.id)),
+  );
+  const unconfirmedRecipientCount = eventLists.filter((events, index) => {
+    if (recipients[index]?.firstOpenedAt !== null) {
+      return false;
+    }
+
+    return events.some((event) => event.disposition === "unconfirmed_gmail_proxy_activity");
+  }).length;
+
   return {
     id: message.id,
     subject: message.subject,
     sentAt: message.sentAt,
     status: message.status,
     recipientCount: recipients.length,
-    openedRecipientCount: recipients.filter((recipient) => recipient.firstOpenedAt !== null).length,
+    openedRecipientCount: recipientsWithCountedActivity.length,
+    unconfirmedRecipientCount,
   };
 }

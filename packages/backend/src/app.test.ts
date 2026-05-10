@@ -107,7 +107,14 @@ describe("backend app", () => {
 
     expect(duplicateResponse.status).toBe(200);
 
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await new Promise((resolve) => setTimeout(resolve, 11000));
+
+    const unconfirmedResponse = await request(app)
+      .get(`/t/${token}.gif`)
+      .set("user-agent", "GoogleImageProxy")
+      .set("x-forwarded-for", "66.249.84.2");
+
+    expect(unconfirmedResponse.status).toBe(200);
 
     const countedResponse = await request(app)
       .get(`/t/${token}.gif`)
@@ -125,9 +132,10 @@ describe("backend app", () => {
     expect(detailResponse.body.recipients[0].openCount).toBe(1);
     expect(detailResponse.body.recipients[0].lastOpenIp).toBe("203.0.113.10");
     expect(detailResponse.body.recipients[0].events[0].disposition).toBe("ignored_sender_or_prefetch");
-    expect(detailResponse.body.recipients[0].events[1].disposition).toBe("counted");
+    expect(detailResponse.body.recipients[0].events[1].disposition).toBe("unconfirmed_gmail_proxy_activity");
+    expect(detailResponse.body.recipients[0].events[2].disposition).toBe("counted");
     expect(notifier.calls).toHaveLength(1);
-  });
+  }, 15000);
 
   it("rejects non-allowlisted users", async () => {
     const { app } = createTestServer();

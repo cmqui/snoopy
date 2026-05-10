@@ -10,7 +10,7 @@ function onHomepage() {
     )
     .addWidget(
       CardService.newTextParagraph()
-        .setText('Tracked opens use remote images. Gmail may proxy image requests, so logged IPs can belong to Google instead of the recipient.')
+        .setText('Tracked activity uses remote images. Gmail may proxy image requests, so some activity will be shown as unconfirmed proxy activity rather than a definite recipient read.')
     );
 
   if (!items.length) {
@@ -137,11 +137,14 @@ function showMessageDetail(e) {
     var countedEvents = (recipient.events || []).filter(function(event) {
       return event.disposition === 'counted';
     });
+    var unconfirmedEvents = (recipient.events || []).filter(function(event) {
+      return event.disposition === 'unconfirmed_gmail_proxy_activity';
+    });
     section.addWidget(
       CardService.newDecoratedText()
         .setTopLabel(recipient.email + ' (' + recipient.recipientType.toUpperCase() + ')')
-        .setText('Counted tracking activity: ' + countedEvents.length)
-        .setBottomLabel(buildRecipientLabel_(recipient, countedEvents))
+        .setText(buildRecipientHeadline_(countedEvents.length, unconfirmedEvents.length))
+        .setBottomLabel(buildRecipientLabel_(recipient, countedEvents, unconfirmedEvents))
     );
   });
 
@@ -223,19 +226,36 @@ function normalizeComposeRecipients_(entries, recipientType) {
 }
 
 function formatSummary_(item) {
-  return [
+  var parts = [
     'Status: ' + item.status,
     'Recipients with counted activity: ' + item.openedRecipientCount + '/' + item.recipientCount
-  ].join(' • ');
+  ];
+  if (item.unconfirmedRecipientCount) {
+    parts.push('Recipients with unconfirmed proxy activity: ' + item.unconfirmedRecipientCount);
+  }
+  return parts.join(' • ');
 }
 
-function buildRecipientLabel_(recipient, countedEvents) {
+function buildRecipientHeadline_(countedCount, unconfirmedCount) {
+  if (countedCount > 0) {
+    return 'Likely opened / counted activity: ' + countedCount;
+  }
+  if (unconfirmedCount > 0) {
+    return 'Unconfirmed Gmail proxy activity: ' + unconfirmedCount;
+  }
+  return 'No tracked activity yet';
+}
+
+function buildRecipientLabel_(recipient, countedEvents, unconfirmedEvents) {
   var parts = [
     'First counted activity: ' + (recipient.firstOpenedAt || 'Not yet'),
     'Last counted IP: ' + (recipient.lastOpenIp || 'Not yet')
   ];
+  if (unconfirmedEvents.length) {
+    parts.push('Unconfirmed Gmail proxy activity: ' + unconfirmedEvents.length);
+  }
   var ignoredEvents = (recipient.events || []).filter(function(event) {
-    return event.disposition !== 'counted';
+    return event.disposition === 'ignored_sender_or_prefetch';
   });
   if (ignoredEvents.length) {
     parts.push('Ignored likely sender/proxy fetches: ' + ignoredEvents.length);
