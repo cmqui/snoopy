@@ -1,0 +1,15 @@
+{
+  "name": "snoopy",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/backend",
+    "packages/addon"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @snoopy/backend",
+    "dev": "npm run dev --workspace @snoopy/backend",
+    "test": "npm run test --workspace @snoopy/backend",
+    "lint": "npm run lint --workspace @snoopy/backend"
+  }
+}
