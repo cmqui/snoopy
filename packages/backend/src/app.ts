@@ -24,6 +24,7 @@ const markSentSchema = z.object({
   trackedMessageId: z.string().uuid(),
   gmailMessageId: z.string().nullable().optional(),
   gmailThreadId: z.string().nullable().optional(),
+  sentAt: z.string().datetime().nullable().optional(),
   recipients: z.array(z.object({
     email: z.string().email(),
     recipientType: z.enum(["to", "cc"]),
@@ -166,6 +167,7 @@ export function createApp(input: {
       const userAgent = request.header("user-agent") ?? "unknown";
 
       await input.trackerService.recordOpen({
+        trackedMessageId: payload.trackedMessageId,
         trackedRecipientId: payload.trackedRecipientId,
         tokenId: payload.tokenId,
         ip,

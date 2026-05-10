@@ -10,6 +10,13 @@ export interface MessageWithRecipients {
   recipients: TrackedRecipient[];
 }
 
+export interface OpenEventWriteResult {
+  created: boolean;
+  updatedMessage: TrackedMessage | null;
+  updatedRecipient: TrackedRecipient | null;
+  wasFirstOpen: boolean;
+}
+
 export interface TrackingRepository {
   upsertUser(user: UserRecord): Promise<UserRecord>;
   getUserByEmail(email: string): Promise<UserRecord | null>;
@@ -18,16 +25,15 @@ export interface TrackingRepository {
     trackedMessageId: string;
     gmailMessageId: string | null;
     gmailThreadId: string | null;
-    recipients: TrackedRecipient[];
     sentAt: string;
     status: TrackedMessage["status"];
   }): Promise<TrackedMessage>;
   getMessageById(id: string): Promise<MessageWithRecipients | null>;
   getMessageByRecipientId(recipientId: string): Promise<MessageWithRecipients | null>;
   listMessagesByOwner(ownerUserId: string, status?: TrackedMessage["status"]): Promise<MessageWithRecipients[]>;
-  hasOpenEventByDedupeKey(dedupeKey: string): Promise<boolean>;
-  createOpenEvent(event: OpenEvent): Promise<void>;
+  applyOpenEvent(event: OpenEvent, countsTowardOpen: boolean): Promise<OpenEventWriteResult>;
   updateRecipient(recipient: TrackedRecipient): Promise<void>;
+  markRecipientNotificationSent(recipientId: string, sentAt: string): Promise<void>;
   updateMessage(message: TrackedMessage): Promise<void>;
   listEventsForRecipient(recipientId: string): Promise<OpenEvent[]>;
 }

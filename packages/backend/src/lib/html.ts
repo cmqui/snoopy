@@ -11,7 +11,7 @@ export function instrumentHtmlBody(
   const pixels = payloads
     .map((payload) => {
       const signed = signPixelToken(payload, secret);
-      return `<img src="${appBaseUrl}/t/${encodeURIComponent(signed)}.gif" alt="" width="1" height="1" style="display:none!important;border:0;outline:none;text-decoration:none;" />`;
+      return `<img src="${appBaseUrl}/t/${encodeURIComponent(signed)}.gif" alt="" width="1" height="1" style="width:1px!important;height:1px!important;opacity:0!important;border:0;outline:none;text-decoration:none;" />`;
     })
     .join("");
 

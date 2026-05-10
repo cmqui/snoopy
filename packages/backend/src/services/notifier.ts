@@ -43,20 +43,22 @@ export class GmailNotificationService implements NotificationService {
 
     const gmail = google.gmail({ version: "v1", auth: oauth2Client });
     const firstOpenedAt = input.recipient.firstOpenedAt ?? "unknown";
+    const firstEvent = input.recipient.events[0];
+    const activityLabel = firstEvent?.disposition === "counted" ? "Confirmed open" : "Likely open";
     const body = [
       `Subject: ${input.message.subject}`,
       `Recipient: ${input.recipient.email}`,
-      `First opened: ${firstOpenedAt}`,
+      `${activityLabel}: ${firstOpenedAt}`,
       `Logged IP: ${input.recipient.lastOpenIp ?? "unknown"}`,
       "",
-      "Note: Gmail may proxy remote images, so this IP may belong to Google rather than the recipient.",
+      "Note: Gmail and privacy features may proxy remote images, so this IP may belong to a proxy rather than the recipient.",
     ].join("\n");
 
     const raw = Buffer.from(
       [
         `From: Snoopy <${this.fromEmail}>`,
         `To: ${input.owner.email}`,
-        `Subject: Email opened: ${input.message.subject}`,
+        `Subject: Email likely opened: ${input.message.subject}`,
         "Content-Type: text/plain; charset=utf-8",
         "",
         body,

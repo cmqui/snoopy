@@ -4,7 +4,7 @@ import type {
   TrackedRecipient,
   UserRecord,
 } from "../types.js";
-import type { MessageWithRecipients, TrackingRepository } from "./types.js";
+import type { MessageWithRecipients, OpenEventWriteResult, TrackingRepository } from "./types.js";
 
 export class InMemoryTrackingRepository implements TrackingRepository {
   private readonly users = new Map<string, UserRecord>();
@@ -32,7 +32,6 @@ export class InMemoryTrackingRepository implements TrackingRepository {
     trackedMessageId: string;
     gmailMessageId: string | null;
     gmailThreadId: string | null;
-    recipients: TrackedRecipient[];
     sentAt: string;
     status: TrackedMessage["status"];
   }): Promise<TrackedMessage> {
@@ -49,9 +48,6 @@ export class InMemoryTrackingRepository implements TrackingRepository {
       status: input.status,
     };
     this.messages.set(updated.id, updated);
-    for (const recipient of input.recipients) {
-      this.recipients.set(recipient.id, recipient);
-    }
     return updated;
   }
 
@@ -87,16 +83,78 @@ export class InMemoryTrackingRepository implements TrackingRepository {
     }));
   }
 
-  public async hasOpenEventByDedupeKey(dedupeKey: string): Promise<boolean> {
-    return [...this.events.values()].some((event) => event.dedupeKey === dedupeKey);
-  }
+  public async applyOpenEvent(event: OpenEvent, countsTowardOpen: boolean): Promise<OpenEventWriteResult> {
+    if (this.events.has(event.id)) {
+      return {
+        created: false,
+        updatedMessage: null,
+        updatedRecipient: null,
+        wasFirstOpen: false,
+      };
+    }
 
-  public async createOpenEvent(event: OpenEvent): Promise<void> {
     this.events.set(event.id, event);
+
+    if (!countsTowardOpen) {
+      return {
+        created: true,
+        updatedMessage: null,
+        updatedRecipient: null,
+        wasFirstOpen: false,
+      };
+    }
+
+    const recipient = this.recipients.get(event.trackedRecipientId);
+    const message = this.messages.get(event.trackedMessageId);
+    if (!recipient || !message) {
+      return {
+        created: true,
+        updatedMessage: null,
+        updatedRecipient: null,
+        wasFirstOpen: false,
+      };
+    }
+
+    const wasFirstOpen = recipient.firstOpenedAt === null;
+    const updatedRecipient: TrackedRecipient = {
+      ...recipient,
+      firstOpenedAt: recipient.firstOpenedAt ?? event.occurredAt,
+      lastOpenedAt: event.occurredAt,
+      openCount: recipient.openCount + 1,
+      lastOpenIp: event.ip,
+      lastOpenUserAgent: event.userAgent,
+    };
+    this.recipients.set(updatedRecipient.id, updatedRecipient);
+
+    const recipients = [...this.recipients.values()].filter((entry) => entry.trackedMessageId === event.trackedMessageId);
+    const updatedMessage: TrackedMessage = {
+      ...message,
+      status: calculateMessageStatus(recipients),
+    };
+    this.messages.set(updatedMessage.id, updatedMessage);
+
+    return {
+      created: true,
+      updatedMessage,
+      updatedRecipient,
+      wasFirstOpen,
+    };
   }
 
   public async updateRecipient(recipient: TrackedRecipient): Promise<void> {
     this.recipients.set(recipient.id, recipient);
+  }
+
+  public async markRecipientNotificationSent(recipientId: string, sentAt: string): Promise<void> {
+    const recipient = this.recipients.get(recipientId);
+    if (!recipient) {
+      return;
+    }
+
+    this.recipients.set(recipientId, {
+      ...recipient,
+      notificationSentAt: sentAt,
+    });
   }
 
   public async updateMessage(message: TrackedMessage): Promise<void> {
@@ -114,4 +172,13 @@ function compareMessagesByMostRecentActivity(a: TrackedMessage, b: TrackedMessag
   const aKey = a.sentAt ?? a.createdAt;
   const bKey = b.sentAt ?? b.createdAt;
   return bKey.localeCompare(aKey);
+}
+
+function calculateMessageStatus(recipients: TrackedRecipient[]): TrackedMessage["status"] {
+  const openedCount = recipients.filter((recipient) => recipient.firstOpenedAt !== null).length;
+  if (openedCount === 0) {
+    return "sent";
+  }
+
+  return openedCount >= recipients.length ? "fully_opened" : "partially_opened";
 }

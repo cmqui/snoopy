@@ -44,7 +44,7 @@ function onCompose(e) {
   var section = CardService.newCardSection()
     .addWidget(
       CardService.newTextParagraph()
-        .setText('Apply tracking to the current draft. Snoopy appends hidden tracking pixels to the draft body. Accurate per-recipient attribution requires one recipient per sent message.')
+        .setText('Apply tracking to the current draft. Snoopy supports exactly one To or Cc recipient per tracked message for accurate attribution.')
     )
     .addWidget(
       CardService.newTextInput()
@@ -60,9 +60,9 @@ function onCompose(e) {
     );
 
   var recipients = getComposeRecipients_(e);
-  if (!recipients.length) {
+  if (recipients.length !== 1) {
     section.addWidget(
-      CardService.newTextParagraph().setText('Add at least one To or Cc recipient before applying tracking.')
+      CardService.newTextParagraph().setText('Add exactly one To or Cc recipient before applying tracking.')
     );
   } else {
     section.addWidget(
@@ -83,10 +83,10 @@ function onCompose(e) {
 function applyTrackingToDraft(e) {
   var recipients = getComposeRecipients_(e);
   var subject = getFormInputValue_(e, 'subjectInput') || getComposeSubject_(e);
-  if (!recipients.length) {
+  if (recipients.length !== 1) {
     return CardService.newActionResponseBuilder()
       .setNotification(
-        CardService.newNotification().setText('Add at least one To or Cc recipient before applying tracking.')
+        CardService.newNotification().setText('Add exactly one To or Cc recipient before applying tracking.')
       )
       .build();
   }
@@ -100,11 +100,6 @@ function applyTrackingToDraft(e) {
   });
 
   var appendedMarkup = prepareResponse.instrumentedHtmlBody.replace('<!-- snoopy-tracking -->', '');
-  callBackend_('/api/v1/messages/mark-sent', 'post', {
-    trackedMessageId: prepareResponse.trackedMessageId,
-    gmailThreadId: e.gmail && e.gmail.threadId ? e.gmail.threadId : null,
-    recipients: recipients
-  });
 
   return CardService.newUpdateDraftActionResponseBuilder()
     .setUpdateDraftBodyAction(
@@ -133,8 +128,9 @@ function showIpLog(e) {
     );
   } else {
     events.forEach(function(event) {
-      var prefix = event.deliveryPath === 'gmail_proxy' ? '* ' : '';
-      var ipDisplay = event.deliveryPath === 'gmail_proxy'
+      var proxied = event.deliveryPath && event.deliveryPath !== 'direct';
+      var prefix = proxied ? '* ' : '';
+      var ipDisplay = proxied
         ? escapeHtml_(prefix + event.ip)
         : '<a href="https://iplocation.io/ip/' + encodeURIComponent(event.ip) + '">' + escapeHtml_(event.ip) + '</a>';
       section.addWidget(
@@ -144,7 +140,7 @@ function showIpLog(e) {
     });
     section.addWidget(
       CardService.newTextParagraph()
-        .setText('* likely Google proxy request')
+        .setText('* likely proxy, privacy, or scanner request')
     );
   }
 
@@ -168,16 +164,15 @@ function buildMessageDetailCard_(detail) {
   var section = CardService.newCardSection();
 
   detail.recipients.forEach(function(recipient) {
-    var countedEvents = (recipient.events || []).filter(function(event) {
-      return event.disposition === 'counted';
-    });
-    var unconfirmedEvents = (recipient.events || []).filter(function(event) {
-      return event.disposition === 'unconfirmed_gmail_proxy_activity';
-    });
+    var events = recipient.events || [];
+    var countedEvents = events.filter(isCountedEvent_);
+    var probableEvents = events.filter(isProbableEvent_);
+    var likelyEvents = events.filter(isLikelyOpenEvent_);
+    var unconfirmedEvents = events.filter(isUnconfirmedEvent_);
     section.addWidget(
       CardService.newDecoratedText()
-        .setText(buildRecipientHeadline_(countedEvents.length, unconfirmedEvents.length, recipient.confidencePercent))
-        .setBottomLabel(buildRecipientLabel_(recipient, countedEvents, unconfirmedEvents))
+        .setText(buildRecipientHeadline_(countedEvents.length, probableEvents.length, unconfirmedEvents.length, recipient.confidencePercent))
+        .setBottomLabel(buildRecipientLabel_(recipient, likelyEvents, countedEvents, probableEvents, unconfirmedEvents))
     );
   });
 
@@ -214,9 +209,9 @@ function fetchTrackedMessageForThread_(threadId) {
 }
 
 function findTrackedMessageForCurrentContext_(e) {
-  var directMessageId = extractTrackedMessageIdFromCurrentMessage_(e);
-  if (directMessageId) {
-    return fetchMessageDetail_(directMessageId);
+  var directContext = extractTrackedMessageContextFromCurrentMessage_(e);
+  if (directContext && directContext.trackedMessageId) {
+    return maybeMarkSentFromContext_(fetchMessageDetail_(directContext.trackedMessageId), directContext);
   }
 
   var threadId = e && e.gmail && e.gmail.threadId;
@@ -228,7 +223,33 @@ function findTrackedMessageForCurrentContext_(e) {
   return lookup.message || null;
 }
 
-function extractTrackedMessageIdFromCurrentMessage_(e) {
+function maybeMarkSentFromContext_(detail, context) {
+  if (!detail || !detail.message || detail.message.sentAt) {
+    return detail;
+  }
+
+  var recipients = (detail.recipients || []).map(function(recipient) {
+    return {
+      email: recipient.email,
+      recipientType: recipient.recipientType
+    };
+  });
+  if (recipients.length !== 1) {
+    return detail;
+  }
+
+  callBackend_('/api/v1/messages/mark-sent', 'post', {
+    trackedMessageId: detail.message.id,
+    gmailMessageId: context.gmailMessageId,
+    gmailThreadId: context.gmailThreadId,
+    sentAt: context.sentAt,
+    recipients: recipients
+  });
+
+  return fetchMessageDetail_(detail.message.id);
+}
+
+function extractTrackedMessageContextFromCurrentMessage_(e) {
   if (!e || !e.gmail || !e.gmail.accessToken || !e.gmail.messageId) {
     return null;
   }
@@ -245,7 +266,12 @@ function extractTrackedMessageIdFromCurrentMessage_(e) {
     return null;
   }
 
-  return decodeTrackedMessageIdFromPixelToken_(decodeURIComponent(match[1]));
+  return {
+    trackedMessageId: decodeTrackedMessageIdFromPixelToken_(decodeURIComponent(match[1])),
+    gmailMessageId: e.gmail.messageId,
+    gmailThreadId: e.gmail.threadId || null,
+    sentAt: message.getDate().toISOString()
+  };
 }
 
 function decodeTrackedMessageIdFromPixelToken_(signedToken) {
@@ -322,7 +348,7 @@ function formatSummary_(item) {
   var parts = [
     'Status: ' + item.status,
     'Confidence: ' + colorizeConfidence_(item.confidencePercent),
-    'Recipients with counted activity: ' + item.openedRecipientCount + '/' + item.recipientCount
+    'Recipients with likely activity: ' + item.openedRecipientCount + '/' + item.recipientCount
   ];
   if (item.unconfirmedRecipientCount) {
     parts.push('Recipients with unconfirmed proxy activity: ' + item.unconfirmedRecipientCount);
@@ -330,26 +356,35 @@ function formatSummary_(item) {
   return parts.join(' • ');
 }
 
-function buildRecipientHeadline_(countedCount, unconfirmedCount, confidencePercent) {
+function buildRecipientHeadline_(countedCount, probableCount, unconfirmedCount, confidencePercent) {
   if (countedCount > 0) {
+    return 'Opened: ' + colorizeConfidence_(confidencePercent) + ' confidence';
+  }
+  if (probableCount > 0) {
     return 'Likely opened: ' + colorizeConfidence_(confidencePercent) + ' confidence';
   }
   if (unconfirmedCount > 0) {
-    return 'Unconfirmed proxy activity: ' + colorizeConfidence_(confidencePercent) + ' confidence';
+    return 'Unconfirmed privacy/proxy activity: ' + colorizeConfidence_(confidencePercent) + ' confidence';
   }
   return 'No tracked activity yet: ' + colorizeConfidence_(confidencePercent) + ' confidence';
 }
 
-function buildRecipientLabel_(recipient, countedEvents, unconfirmedEvents) {
-  var firstCountedActivity = countedEvents.length ? countedEvents[0].occurredAt : 'Not yet';
-  var lastCountedActivity = countedEvents.length ? countedEvents[countedEvents.length - 1].occurredAt : 'Not yet';
+function buildRecipientLabel_(recipient, likelyEvents, countedEvents, probableEvents, unconfirmedEvents) {
+  var firstLikelyActivity = likelyEvents.length ? likelyEvents[0].occurredAt : 'Not yet';
+  var lastLikelyActivity = likelyEvents.length ? likelyEvents[likelyEvents.length - 1].occurredAt : 'Not yet';
   var parts = [
-    'First counted activity: ' + escapeHtml_(firstCountedActivity),
-    'Last counted activity: ' + escapeHtml_(lastCountedActivity),
-    'Last counted IP: ' + escapeHtml_(recipient.lastOpenIp || 'Not yet')
+    'First likely activity: ' + escapeHtml_(firstLikelyActivity),
+    'Last likely activity: ' + escapeHtml_(lastLikelyActivity),
+    'Last likely IP: ' + escapeHtml_(recipient.lastOpenIp || 'Not yet')
   ];
+  if (countedEvents.length) {
+    parts.push('Confirmed direct opens: ' + escapeHtml_(String(countedEvents.length)));
+  }
+  if (probableEvents.length) {
+    parts.push('Probable proxy opens: ' + escapeHtml_(String(probableEvents.length)));
+  }
   if (unconfirmedEvents.length) {
-    parts.push('Unconfirmed Gmail proxy activity: ' + escapeHtml_(String(unconfirmedEvents.length)));
+    parts.push('Unconfirmed privacy/proxy activity: ' + escapeHtml_(String(unconfirmedEvents.length)));
   }
   var ignoredEvents = (recipient.events || []).filter(function(event) {
     return event.disposition === 'ignored_sender_or_prefetch';
@@ -386,6 +421,23 @@ function collectEventsForMessage_(detail) {
   });
 
   return events;
+}
+
+function isCountedEvent_(event) {
+  return event.disposition === 'counted';
+}
+
+function isProbableEvent_(event) {
+  return event.disposition === 'probable_open';
+}
+
+function isLikelyOpenEvent_(event) {
+  return isCountedEvent_(event) || isProbableEvent_(event);
+}
+
+function isUnconfirmedEvent_(event) {
+  return event.disposition === 'unconfirmed_gmail_proxy_activity' ||
+    event.disposition === 'unconfirmed_privacy_proxy_activity';
 }
 
 function colorizeConfidence_(confidencePercent) {

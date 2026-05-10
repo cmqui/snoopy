@@ -5,6 +5,7 @@ import { buildDedupeKey, classifyDeliveryPath } from "../lib/proxy.js";
 import type { TrackingRepository } from "../repositories/types.js";
 import type {
   AuthenticatedUser,
+  DeliveryPath,
   EventDisposition,
   MarkSentRequest,
   MessageDetailResponse,
@@ -28,11 +29,12 @@ export class TrackerService {
     private readonly notificationService: NotificationService,
     private readonly tokenSecret: string,
     private readonly appBaseUrl: string,
+    private readonly now: () => Date = () => new Date(),
   ) {}
 
   public async syncUser(user: AuthenticatedUser, allowlisted: boolean): Promise<UserRecord> {
     const existing = await this.repository.getUserByEmail(user.email);
-    const now = new Date().toISOString();
+    const now = this.now().toISOString();
 
     const record: UserRecord = {
       id: existing?.id ?? user.id,
@@ -61,9 +63,12 @@ export class TrackerService {
     if (recipients.length === 0) {
       throw new HttpError(400, "At least one recipient is required");
     }
+    if (recipients.length > 1) {
+      throw new HttpError(400, "Accurate tracking requires exactly one To or Cc recipient per tracked message");
+    }
 
     const trackedMessageId = createId();
-    const createdAt = new Date().toISOString();
+    const createdAt = this.now().toISOString();
     const message: TrackedMessage = {
       id: trackedMessageId,
       ownerUserId: user.id,
@@ -74,6 +79,7 @@ export class TrackerService {
       fromEmail: user.email.toLowerCase(),
       htmlBodyHash: sha256(request.htmlBody),
       trackingEnabled: true,
+      trackingAppliedAt: createdAt,
       createdAt,
       sentAt: null,
       status: "draft",
@@ -134,45 +140,25 @@ export class TrackerService {
     }
 
     const normalizedRecipients = normalizeRecipients(request.recipients);
-    const recipientMap = new Map(
-      messageWithRecipients.recipients.map((recipient) => [recipient.email.toLowerCase(), recipient]),
-    );
+    if (normalizedRecipients.length !== 1 || messageWithRecipients.recipients.length !== 1) {
+      throw new HttpError(400, "Accurate tracking requires exactly one To or Cc recipient per tracked message");
+    }
 
-    const updatedRecipients = normalizedRecipients.map((recipient) => {
-      const existing = recipientMap.get(recipient.email.toLowerCase());
-      if (!existing) {
-        return {
-          id: createId(),
-          trackedMessageId: messageWithRecipients.message.id,
-          email: recipient.email,
-          recipientType: recipient.recipientType,
-          trackingTokenId: createId(),
-          firstOpenedAt: null,
-          lastOpenedAt: null,
-          openCount: 0,
-          lastOpenIp: null,
-          lastOpenUserAgent: null,
-          lastOpenGeo: null,
-          notificationSentAt: null,
-        } satisfies TrackedRecipient;
-      }
-
-      return {
-        ...existing,
-        recipientType: recipient.recipientType,
-      };
-    });
+    const requestedRecipient = normalizedRecipients[0];
+    const trackedRecipient = messageWithRecipients.recipients[0];
+    if (!requestedRecipient || !trackedRecipient || requestedRecipient.email !== trackedRecipient.email) {
+      throw new HttpError(400, "Tracked recipient cannot be changed after tracking is applied");
+    }
 
     const updated = await this.repository.markSent({
       trackedMessageId: request.trackedMessageId,
       gmailMessageId: request.gmailMessageId ?? null,
       gmailThreadId: request.gmailThreadId ?? messageWithRecipients.message.gmailThreadId,
-      recipients: updatedRecipients,
-      sentAt: new Date().toISOString(),
-      status: "sent",
+      sentAt: request.sentAt ?? this.now().toISOString(),
+      status: messageWithRecipients.message.status === "draft" ? "sent" : messageWithRecipients.message.status,
     });
 
-    return buildSummary(this.repository, updated, updatedRecipients);
+    return buildSummary(this.repository, updated, messageWithRecipients.recipients);
   }
 
   public async listMessages(user: AuthenticatedUser, status?: TrackedMessage["status"]): Promise<MessageSummaryResponse[]> {
@@ -226,6 +212,7 @@ export class TrackerService {
   }
 
   public async recordOpen(input: {
+    trackedMessageId: string;
     trackedRecipientId: string;
     tokenId: string;
     ip: string;
@@ -242,22 +229,30 @@ export class TrackerService {
     if (!recipient) {
       throw new HttpError(404, "Tracked recipient not found");
     }
-
-    const occurredAt = new Date();
-    const dedupeKey = buildDedupeKey(input.tokenId, input.ip, input.userAgent, occurredAt);
-    const alreadySeen = await this.repository.hasOpenEventByDedupeKey(dedupeKey);
-    if (alreadySeen) {
-      return;
+    if (
+      messageWithRecipients.message.id !== input.trackedMessageId ||
+      recipient.trackingTokenId !== input.tokenId
+    ) {
+      throw new HttpError(404, "Tracked recipient not found");
     }
 
+    const occurredAt = this.now();
     const deliveryPath = classifyDeliveryPath(input.userAgent, input.ip);
     const disposition = classifyEventDisposition({
       message: messageWithRecipients.message,
       deliveryPath,
       occurredAt,
     });
+    const dedupeKey = buildDedupeKey({
+      tokenId: input.tokenId,
+      ip: input.ip,
+      userAgent: input.userAgent,
+      occurredAt,
+      deliveryPath,
+      disposition,
+    });
     const event: OpenEvent = {
-      id: createId(),
+      id: sha256(dedupeKey),
       trackedMessageId: messageWithRecipients.message.id,
       trackedRecipientId: recipient.id,
       occurredAt: occurredAt.toISOString(),
@@ -276,57 +271,28 @@ export class TrackerService {
       },
     };
 
-    await this.repository.createOpenEvent(event);
-
-    if (disposition === "ignored_sender_or_prefetch") {
+    const shouldCountTowardOpen = countsTowardOpen(disposition);
+    const result = await this.repository.applyOpenEvent(event, shouldCountTowardOpen);
+    if (!result.created || !shouldCountTowardOpen || !result.updatedRecipient || !result.updatedMessage) {
       return;
     }
 
-    const shouldCountTowardOpen = disposition === "counted";
-    const updatedRecipient: TrackedRecipient = {
-      ...recipient,
-      firstOpenedAt: shouldCountTowardOpen ? recipient.firstOpenedAt ?? event.occurredAt : recipient.firstOpenedAt,
-      lastOpenedAt: shouldCountTowardOpen ? event.occurredAt : recipient.lastOpenedAt,
-      openCount: shouldCountTowardOpen ? recipient.openCount + 1 : recipient.openCount,
-      lastOpenIp: shouldCountTowardOpen ? input.ip : recipient.lastOpenIp,
-      lastOpenUserAgent: shouldCountTowardOpen ? input.userAgent : recipient.lastOpenUserAgent,
-    };
-    await this.repository.updateRecipient(updatedRecipient);
-
-    const updatedRecipients = messageWithRecipients.recipients.map((entry) =>
-      entry.id === recipient.id ? updatedRecipient : entry
-    );
-    const openedCount = updatedRecipients.filter((entry) => entry.firstOpenedAt !== null).length;
-    const messageStatus = openedCount === 0
-      ? "sent"
-      : openedCount >= updatedRecipients.length
-      ? "fully_opened"
-      : "partially_opened";
-
-    await this.repository.updateMessage({
-      ...messageWithRecipients.message,
-      status: messageStatus,
-    });
-
-    if (shouldCountTowardOpen && updatedRecipient.notificationSentAt === null) {
+    if (result.wasFirstOpen && result.updatedRecipient.notificationSentAt === null) {
       const owner = await this.repository.getUserByEmail(messageWithRecipients.message.fromEmail);
       if (owner && owner.notificationPreference === "first_open_email") {
         const detailRecipient: MessageRecipientDetailResponse = {
-          ...updatedRecipient,
+          ...result.updatedRecipient,
           events: [event],
           confidencePercent: calculateConfidencePercent([event]),
         };
         await this.notificationService.sendFirstOpenNotification({
           owner,
-          message: { ...messageWithRecipients.message, status: messageStatus },
+          message: result.updatedMessage,
           recipient: detailRecipient,
         });
       }
 
-      await this.repository.updateRecipient({
-        ...updatedRecipient,
-        notificationSentAt: event.occurredAt,
-      });
+      await this.repository.markRecipientNotificationSent(result.updatedRecipient.id, event.occurredAt);
     }
   }
 }
@@ -352,23 +318,41 @@ function normalizeRecipients(recipients: RecipientInput[]): RecipientInput[] {
 
 function classifyEventDisposition(input: {
   message: TrackedMessage;
-  deliveryPath: "direct" | "gmail_proxy" | "unknown";
+  deliveryPath: DeliveryPath;
   occurredAt: Date;
 }): EventDisposition {
-  const referenceTimestamp = input.message.sentAt ?? input.message.createdAt;
+  const referenceTimestamp = input.message.sentAt ?? input.message.trackingAppliedAt ?? input.message.createdAt;
   const referenceTime = Date.parse(referenceTimestamp);
   const elapsedMs = Number.isNaN(referenceTime) ? Number.POSITIVE_INFINITY : input.occurredAt.getTime() - referenceTime;
+  const sendConfirmed = input.message.sentAt !== null;
 
-  // Very early Gmail proxy fetches are often sender self-views or immediate Gmail prefetches.
-  if (input.deliveryPath === "gmail_proxy" && elapsedMs < 10 * 1000) {
+  if (elapsedMs < 0) {
+    return "ignored_sender_or_prefetch";
+  }
+
+  // Before Gmail send confirmation, immediate fetches are usually draft previews or sender self-views.
+  if (!sendConfirmed && elapsedMs < 2 * 60 * 1000) {
+    return "ignored_sender_or_prefetch";
+  }
+
+  // After send confirmation, only early proxy fetches are treated as prefetch/self-view noise.
+  if (sendConfirmed && input.deliveryPath !== "direct" && elapsedMs < 10 * 1000) {
     return "ignored_sender_or_prefetch";
   }
 
   if (input.deliveryPath === "gmail_proxy") {
-    return "unconfirmed_gmail_proxy_activity";
+    return "probable_open";
   }
 
-  return "counted";
+  if (input.deliveryPath === "direct") {
+    return "counted";
+  }
+
+  return "unconfirmed_privacy_proxy_activity";
+}
+
+function countsTowardOpen(disposition: EventDisposition): boolean {
+  return disposition === "counted" || disposition === "probable_open";
 }
 
 async function buildSummary(
@@ -385,7 +369,7 @@ async function buildSummary(
       return false;
     }
 
-    return events.some((event) => event.disposition === "unconfirmed_gmail_proxy_activity");
+    return events.some((event) => isUnconfirmedDisposition(event.disposition));
   }).length;
   const recipientConfidencePercents = eventLists.map((events) => calculateConfidencePercent(events));
 
@@ -411,12 +395,13 @@ function calculateMessageConfidencePercent(confidencePercents: number[]): number
 
 function calculateConfidencePercent(events: OpenEvent[]): number {
   const countedEvents = events.filter((event) => event.disposition === "counted");
-  const unconfirmedEvents = events.filter((event) => event.disposition === "unconfirmed_gmail_proxy_activity");
+  const probableEvents = events.filter((event) => event.disposition === "probable_open");
+  const unconfirmedEvents = events.filter((event) => isUnconfirmedDisposition(event.disposition));
   const ignoredEvents = events.filter((event) => event.disposition === "ignored_sender_or_prefetch");
 
   if (countedEvents.length > 0) {
     let confidence = 90;
-    if (unconfirmedEvents.length > 0) {
+    if (probableEvents.length > 0) {
       confidence += 5;
     }
     if (countedEvents.length > 1) {
@@ -425,9 +410,14 @@ function calculateConfidencePercent(events: OpenEvent[]): number {
     return Math.min(99, confidence);
   }
 
+  if (probableEvents.length > 0) {
+    const probableConfidenceByCount = [78, 86, 91, 94, 96];
+    return probableConfidenceByCount[Math.min(probableEvents.length, probableConfidenceByCount.length) - 1] ?? 96;
+  }
+
   if (unconfirmedEvents.length > 0) {
-    const proxyConfidenceByCount = [45, 60, 72, 80, 85];
-    return proxyConfidenceByCount[Math.min(unconfirmedEvents.length, proxyConfidenceByCount.length) - 1] ?? 85;
+    const proxyConfidenceByCount = [20, 30, 38, 45, 50];
+    return proxyConfidenceByCount[Math.min(unconfirmedEvents.length, proxyConfidenceByCount.length) - 1] ?? 50;
   }
 
   if (ignoredEvents.length > 0) {
@@ -435,4 +425,9 @@ function calculateConfidencePercent(events: OpenEvent[]): number {
   }
 
   return 0;
+}
+
+function isUnconfirmedDisposition(disposition: EventDisposition): boolean {
+  return disposition === "unconfirmed_gmail_proxy_activity" ||
+    disposition === "unconfirmed_privacy_proxy_activity";
 }

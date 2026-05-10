@@ -23,7 +23,18 @@ class SpyNotificationService implements NotificationService {
   }
 }
 
-function createTestServer() {
+function createClock(initial: string) {
+  let current = new Date(initial);
+
+  return {
+    now: () => new Date(current.getTime()),
+    advanceMs(ms: number) {
+      current = new Date(current.getTime() + ms);
+    },
+  };
+}
+
+function createTestServer(input: { now?: () => Date } = {}) {
   const repository = new InMemoryTrackingRepository();
   const notifier = new SpyNotificationService();
   const trackerService = new TrackerService(
@@ -31,6 +42,7 @@ function createTestServer() {
     notifier,
     "x".repeat(32),
     "http://localhost:8080",
+    input.now,
   );
 
   const authMiddleware: express.RequestHandler = (req, _res, next) => {
@@ -54,9 +66,16 @@ function createTestServer() {
   return { app, repository, notifier };
 }
 
+function extractToken(instrumentedHtmlBody: string): string {
+  const tokenMatch = instrumentedHtmlBody.match(/\/t\/([^"]+)\.gif/);
+  expect(tokenMatch?.[1]).toBeTruthy();
+  return decodeURIComponent(tokenMatch?.[1] ?? "");
+}
+
 describe("backend app", () => {
   it("prepares, marks sent, records opens, and exposes details", async () => {
-    const { app, notifier } = createTestServer();
+    const clock = createClock("2026-05-10T00:00:00.000Z");
+    const { app, notifier } = createTestServer({ now: clock.now });
 
     const prepareResponse = await request(app)
       .post("/api/v1/messages/prepare")
@@ -73,11 +92,9 @@ describe("backend app", () => {
     expect(prepareResponse.status).toBe(200);
     expect(prepareResponse.body.trackedMessageId).toBeTruthy();
     const trackedMessageId = prepareResponse.body.trackedMessageId as string;
-    const instrumentedHtmlBody = prepareResponse.body.instrumentedHtmlBody as string;
-    const tokenMatch = instrumentedHtmlBody.match(/\/t\/([^"]+)\.gif/);
-    expect(tokenMatch?.[1]).toBeTruthy();
-    const token = decodeURIComponent(tokenMatch?.[1] ?? "");
+    const token = extractToken(prepareResponse.body.instrumentedHtmlBody as string);
 
+    clock.advanceMs(1000);
     const markSentResponse = await request(app)
       .post("/api/v1/messages/mark-sent")
       .set("x-test-user-email", "allowed@example.com")
@@ -108,14 +125,13 @@ describe("backend app", () => {
 
     expect(duplicateResponse.status).toBe(200);
 
-    await new Promise((resolve) => setTimeout(resolve, 11000));
-
-    const unconfirmedResponse = await request(app)
+    clock.advanceMs(11_000);
+    const probableResponse = await request(app)
       .get(`/t/${token}.gif`)
       .set("user-agent", "GoogleImageProxy")
       .set("x-forwarded-for", "66.249.84.2");
 
-    expect(unconfirmedResponse.status).toBe(200);
+    expect(probableResponse.status).toBe(200);
 
     const countedResponse = await request(app)
       .get(`/t/${token}.gif`)
@@ -130,15 +146,16 @@ describe("backend app", () => {
 
     expect(detailResponse.status).toBe(200);
     expect(detailResponse.body.message.status).toBe("fully_opened");
-    expect(detailResponse.body.recipients[0].openCount).toBe(1);
+    expect(detailResponse.body.recipients[0].openCount).toBe(2);
     expect(detailResponse.body.recipients[0].lastOpenIp).toBe("203.0.113.10");
     expect(detailResponse.body.recipients[0].confidencePercent).toBe(95);
     expect(detailResponse.body.confidencePercent).toBe(95);
+    expect(detailResponse.body.recipients[0].events).toHaveLength(3);
     expect(detailResponse.body.recipients[0].events[0].disposition).toBe("ignored_sender_or_prefetch");
-    expect(detailResponse.body.recipients[0].events[1].disposition).toBe("unconfirmed_gmail_proxy_activity");
+    expect(detailResponse.body.recipients[0].events[1].disposition).toBe("probable_open");
     expect(detailResponse.body.recipients[0].events[2].disposition).toBe("counted");
     expect(notifier.calls).toHaveLength(1);
-  }, 15000);
+  });
 
   it("rejects non-allowlisted users", async () => {
     const { app } = createTestServer();
@@ -189,15 +206,16 @@ describe("backend app", () => {
     expect(threadResponse.body.message.message.gmailThreadId).toBe("thread-123");
   });
 
-  it("raises confidence as unconfirmed Gmail proxy activity accumulates", async () => {
-    const { app } = createTestServer();
+  it("keeps privacy proxy activity unconfirmed", async () => {
+    const clock = createClock("2026-05-10T00:00:00.000Z");
+    const { app, notifier } = createTestServer({ now: clock.now });
 
     const prepareResponse = await request(app)
       .post("/api/v1/messages/prepare")
       .set("x-test-user-email", "allowed@example.com")
       .send({
-        subject: "Proxy only",
-        htmlBody: "<p>Proxy only</p>",
+        subject: "Privacy proxy",
+        htmlBody: "<p>Privacy proxy</p>",
         recipients: [
           { email: "recipient@example.com", recipientType: "to" },
         ],
@@ -205,9 +223,7 @@ describe("backend app", () => {
       });
 
     const trackedMessageId = prepareResponse.body.trackedMessageId as string;
-    const instrumentedHtmlBody = prepareResponse.body.instrumentedHtmlBody as string;
-    const tokenMatch = instrumentedHtmlBody.match(/\/t\/([^"]+)\.gif/);
-    const token = decodeURIComponent(tokenMatch?.[1] ?? "");
+    const token = extractToken(prepareResponse.body.instrumentedHtmlBody as string);
 
     await request(app)
       .post("/api/v1/messages/mark-sent")
@@ -220,25 +236,136 @@ describe("backend app", () => {
         ],
       });
 
-    await new Promise((resolve) => setTimeout(resolve, 11000));
-
+    clock.advanceMs(11_000);
     await request(app)
       .get(`/t/${token}.gif`)
-      .set("user-agent", "GoogleImageProxy")
-      .set("x-forwarded-for", "66.249.84.2");
+      .set("user-agent", "Mozilla/5.0 AppleMail MailPrivacyProtection")
+      .set("x-forwarded-for", "203.0.113.20");
 
+    clock.advanceMs(15 * 60 * 1000);
     await request(app)
       .get(`/t/${token}.gif`)
-      .set("user-agent", "GoogleImageProxy")
-      .set("x-forwarded-for", "66.249.84.3");
+      .set("user-agent", "Mozilla/5.0 AppleMail MailPrivacyProtection")
+      .set("x-forwarded-for", "203.0.113.21");
 
     const detailResponse = await request(app)
       .get(`/api/v1/messages/${trackedMessageId}`)
       .set("x-test-user-email", "allowed@example.com");
 
     expect(detailResponse.status).toBe(200);
-    expect(detailResponse.body.recipients[0].confidencePercent).toBe(60);
-    expect(detailResponse.body.confidencePercent).toBe(60);
+    expect(detailResponse.body.message.status).toBe("sent");
     expect(detailResponse.body.recipients[0].openCount).toBe(0);
-  }, 15000);
+    expect(detailResponse.body.recipients[0].confidencePercent).toBe(30);
+    expect(detailResponse.body.confidencePercent).toBe(30);
+    expect(detailResponse.body.recipients[0].events).toHaveLength(2);
+    expect(detailResponse.body.recipients[0].events[0].disposition).toBe("unconfirmed_privacy_proxy_activity");
+    expect(notifier.calls).toHaveLength(0);
+  });
+
+  it("ignores immediate draft fetches when a send has not been confirmed", async () => {
+    const clock = createClock("2026-05-10T00:00:00.000Z");
+    const { app } = createTestServer({ now: clock.now });
+
+    const prepareResponse = await request(app)
+      .post("/api/v1/messages/prepare")
+      .set("x-test-user-email", "allowed@example.com")
+      .send({
+        subject: "Draft grace",
+        htmlBody: "<p>Draft grace</p>",
+        recipients: [
+          { email: "recipient@example.com", recipientType: "to" },
+        ],
+        draftContextType: "new",
+      });
+
+    const trackedMessageId = prepareResponse.body.trackedMessageId as string;
+    const token = extractToken(prepareResponse.body.instrumentedHtmlBody as string);
+
+    await request(app)
+      .get(`/t/${token}.gif`)
+      .set("user-agent", "GoogleImageProxy")
+      .set("x-forwarded-for", "66.249.84.1");
+
+    clock.advanceMs(2 * 60 * 1000 + 1000);
+    await request(app)
+      .get(`/t/${token}.gif`)
+      .set("user-agent", "GoogleImageProxy")
+      .set("x-forwarded-for", "66.249.84.2");
+
+    const detailResponse = await request(app)
+      .get(`/api/v1/messages/${trackedMessageId}`)
+      .set("x-test-user-email", "allowed@example.com");
+
+    expect(detailResponse.status).toBe(200);
+    expect(detailResponse.body.message.sentAt).toBeNull();
+    expect(detailResponse.body.message.status).toBe("fully_opened");
+    expect(detailResponse.body.recipients[0].openCount).toBe(1);
+    expect(detailResponse.body.recipients[0].events[0].disposition).toBe("ignored_sender_or_prefetch");
+    expect(detailResponse.body.recipients[0].events[1].disposition).toBe("probable_open");
+
+    const markSentResponse = await request(app)
+      .post("/api/v1/messages/mark-sent")
+      .set("x-test-user-email", "allowed@example.com")
+      .send({
+        trackedMessageId,
+        gmailMessageId: "gmail-message-after-open",
+        sentAt: "2026-05-10T00:01:00.000Z",
+        recipients: [
+          { email: "recipient@example.com", recipientType: "to" },
+        ],
+      });
+
+    expect(markSentResponse.status).toBe(200);
+    expect(markSentResponse.body.status).toBe("fully_opened");
+  });
+
+  it("rejects multi-recipient tracking", async () => {
+    const { app } = createTestServer();
+
+    const response = await request(app)
+      .post("/api/v1/messages/prepare")
+      .set("x-test-user-email", "allowed@example.com")
+      .send({
+        subject: "Too many",
+        htmlBody: "<p>Too many</p>",
+        recipients: [
+          { email: "one@example.com", recipientType: "to" },
+          { email: "two@example.com", recipientType: "cc" },
+        ],
+        draftContextType: "new",
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toContain("exactly one");
+  });
+
+  it("rejects recipient changes after tracking is applied", async () => {
+    const { app } = createTestServer();
+
+    const prepareResponse = await request(app)
+      .post("/api/v1/messages/prepare")
+      .set("x-test-user-email", "allowed@example.com")
+      .send({
+        subject: "Recipient change",
+        htmlBody: "<p>Recipient change</p>",
+        recipients: [
+          { email: "original@example.com", recipientType: "to" },
+        ],
+        draftContextType: "new",
+      });
+
+    const response = await request(app)
+      .post("/api/v1/messages/mark-sent")
+      .set("x-test-user-email", "allowed@example.com")
+      .send({
+        trackedMessageId: prepareResponse.body.trackedMessageId,
+        gmailMessageId: "gmail-message-4",
+        recipients: [
+          { email: "changed@example.com", recipientType: "to" },
+        ],
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toContain("cannot be changed");
+  });
 });

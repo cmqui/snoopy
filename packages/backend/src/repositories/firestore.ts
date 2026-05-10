@@ -5,7 +5,7 @@ import type {
   TrackedRecipient,
   UserRecord,
 } from "../types.js";
-import type { MessageWithRecipients, TrackingRepository } from "./types.js";
+import type { MessageWithRecipients, OpenEventWriteResult, TrackingRepository } from "./types.js";
 
 type FirestoreCollections = "users" | "tracked_messages" | "tracked_recipients" | "open_events";
 
@@ -48,7 +48,6 @@ export class FirestoreTrackingRepository implements TrackingRepository {
     trackedMessageId: string;
     gmailMessageId: string | null;
     gmailThreadId: string | null;
-    recipients: TrackedRecipient[];
     sentAt: string;
     status: TrackedMessage["status"];
   }): Promise<TrackedMessage> {
@@ -69,9 +68,6 @@ export class FirestoreTrackingRepository implements TrackingRepository {
 
     const batch = this.firestore.batch();
     batch.set(ref, updated);
-    for (const recipient of input.recipients) {
-      batch.set(this.collection("tracked_recipients").doc(recipient.id), recipient);
-    }
     await batch.commit();
 
     return updated;
@@ -126,17 +122,89 @@ export class FirestoreTrackingRepository implements TrackingRepository {
     }));
   }
 
-  public async hasOpenEventByDedupeKey(dedupeKey: string): Promise<boolean> {
-    const snapshot = await this.collection("open_events").where("dedupeKey", "==", dedupeKey).limit(1).get();
-    return !snapshot.empty;
-  }
+  public async applyOpenEvent(event: OpenEvent, countsTowardOpen: boolean): Promise<OpenEventWriteResult> {
+    const eventRef = this.collection("open_events").doc(event.id);
+    const recipientRef = this.collection("tracked_recipients").doc(event.trackedRecipientId);
+    const messageRef = this.collection("tracked_messages").doc(event.trackedMessageId);
+    const recipientsQuery = this.collection("tracked_recipients").where("trackedMessageId", "==", event.trackedMessageId);
 
-  public async createOpenEvent(event: OpenEvent): Promise<void> {
-    await this.collection("open_events").doc(event.id).set(event);
+    return this.firestore.runTransaction(async (transaction) => {
+      const eventSnapshot = await transaction.get(eventRef);
+      if (eventSnapshot.exists) {
+        return {
+          created: false,
+          updatedMessage: null,
+          updatedRecipient: null,
+          wasFirstOpen: false,
+        };
+      }
+
+      if (!countsTowardOpen) {
+        transaction.create(eventRef, event);
+        return {
+          created: true,
+          updatedMessage: null,
+          updatedRecipient: null,
+          wasFirstOpen: false,
+        };
+      }
+
+      const [recipientSnapshot, messageSnapshot, recipientsSnapshot] = await Promise.all([
+        transaction.get(recipientRef),
+        transaction.get(messageRef),
+        transaction.get(recipientsQuery),
+      ]);
+
+      transaction.create(eventRef, event);
+
+      if (!recipientSnapshot.exists || !messageSnapshot.exists) {
+        return {
+          created: true,
+          updatedMessage: null,
+          updatedRecipient: null,
+          wasFirstOpen: false,
+        };
+      }
+
+      const recipient = recipientSnapshot.data() as TrackedRecipient;
+      const message = messageSnapshot.data() as TrackedMessage;
+      const wasFirstOpen = recipient.firstOpenedAt === null;
+      const updatedRecipient: TrackedRecipient = {
+        ...recipient,
+        firstOpenedAt: recipient.firstOpenedAt ?? event.occurredAt,
+        lastOpenedAt: event.occurredAt,
+        openCount: recipient.openCount + 1,
+        lastOpenIp: event.ip,
+        lastOpenUserAgent: event.userAgent,
+      };
+
+      const recipients = recipientsSnapshot.docs.map((doc) => doc.data() as TrackedRecipient);
+      const updatedRecipients = recipients.map((entry) => entry.id === updatedRecipient.id ? updatedRecipient : entry);
+      const updatedMessage: TrackedMessage = {
+        ...message,
+        status: calculateMessageStatus(updatedRecipients),
+      };
+
+      transaction.set(recipientRef, updatedRecipient);
+      transaction.set(messageRef, updatedMessage);
+
+      return {
+        created: true,
+        updatedMessage,
+        updatedRecipient,
+        wasFirstOpen,
+      };
+    });
   }
 
   public async updateRecipient(recipient: TrackedRecipient): Promise<void> {
     await this.collection("tracked_recipients").doc(recipient.id).set(recipient);
+  }
+
+  public async markRecipientNotificationSent(recipientId: string, sentAt: string): Promise<void> {
+    await this.collection("tracked_recipients").doc(recipientId).set({
+      notificationSentAt: sentAt,
+    }, { merge: true });
   }
 
   public async updateMessage(message: TrackedMessage): Promise<void> {
@@ -162,4 +230,13 @@ function compareMessagesByMostRecentActivity(a: TrackedMessage, b: TrackedMessag
   const aKey = a.sentAt ?? a.createdAt;
   const bKey = b.sentAt ?? b.createdAt;
   return bKey.localeCompare(aKey);
+}
+
+function calculateMessageStatus(recipients: TrackedRecipient[]): TrackedMessage["status"] {
+  const openedCount = recipients.filter((recipient) => recipient.firstOpenedAt !== null).length;
+  if (openedCount === 0) {
+    return "sent";
+  }
+
+  return openedCount >= recipients.length ? "fully_opened" : "partially_opened";
 }

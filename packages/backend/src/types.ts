@@ -1,9 +1,14 @@
 export type DraftContextType = "new" | "reply";
 export type RecipientType = "to" | "cc";
 export type MessageStatus = "draft" | "sent" | "partially_opened" | "fully_opened";
-export type DeliveryPath = "direct" | "gmail_proxy" | "unknown";
+export type DeliveryPath = "direct" | "gmail_proxy" | "apple_mail_privacy" | "privacy_proxy" | "security_scanner" | "unknown";
 export type NotificationPreference = "first_open_email" | "off";
-export type EventDisposition = "counted" | "unconfirmed_gmail_proxy_activity" | "ignored_sender_or_prefetch";
+export type EventDisposition =
+  | "counted"
+  | "probable_open"
+  | "unconfirmed_gmail_proxy_activity"
+  | "unconfirmed_privacy_proxy_activity"
+  | "ignored_sender_or_prefetch";
 
 export interface UserRecord {
   id: string;
@@ -27,6 +32,7 @@ export interface TrackedMessage {
   fromEmail: string;
   htmlBodyHash: string;
   trackingEnabled: boolean;
+  trackingAppliedAt: string | null;
   createdAt: string;
   sentAt: string | null;
   status: MessageStatus;
@@ -93,6 +99,7 @@ export interface MarkSentRequest {
   trackedMessageId: string;
   gmailMessageId?: string | null;
   gmailThreadId?: string | null;
+  sentAt?: string | null;
   recipients: RecipientInput[];
 }
 
