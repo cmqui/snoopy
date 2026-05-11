@@ -22,7 +22,9 @@
       "homepageTrigger": {
         "runFunction": "onHomepage"
       },
-      "openLinkUrlPrefixes": "https://iplocation.io"
+      "openLinkUrlPrefixes": [
+        "https://iplocation.io"
+      ]
     },
     "gmail": {
       "contextualTriggers": [
