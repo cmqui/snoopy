@@ -12,7 +12,7 @@
     "openid",
     "email"
   ],
-  "urlWhitelist": [
+  "urlFetchWhitelist": [
     "https://snoopy-git-427372076833.europe-west1.run.app"
   ],
   "addOns": {
