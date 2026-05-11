@@ -13,7 +13,7 @@
     "email"
   ],
   "urlFetchWhitelist": [
-    "https://snoopy-git-427372076833.europe-west1.run.app"
+    "https://snoopy-git-427372076833.europe-west1.run.app/"
   ],
   "addOns": {
     "common": {
