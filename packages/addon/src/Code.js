@@ -135,7 +135,7 @@ function showIpLog(e) {
         : '<a href="https://iplocation.io/ip/' + encodeURIComponent(event.ip) + '">' + escapeHtml_(event.ip) + '</a>';
       section.addWidget(
         CardService.newTextParagraph()
-          .setText(ipDisplay + '<br>Logged at: ' + escapeHtml_(event.occurredAt))
+          .setText(ipDisplay + '<br>Logged at: ' + escapeHtml_(formatTimestamp_(event.occurredAt)))
       );
     });
     section.addWidget(
@@ -373,8 +373,8 @@ function buildRecipientLabel_(recipient, likelyEvents, countedEvents, probableEv
   var firstLikelyActivity = likelyEvents.length ? likelyEvents[0].occurredAt : 'Not yet';
   var lastLikelyActivity = likelyEvents.length ? likelyEvents[likelyEvents.length - 1].occurredAt : 'Not yet';
   var parts = [
-    'First likely activity: ' + escapeHtml_(firstLikelyActivity),
-    'Last likely activity: ' + escapeHtml_(lastLikelyActivity),
+    'First likely activity: ' + escapeHtml_(formatTimestamp_(firstLikelyActivity)),
+    'Last likely activity: ' + escapeHtml_(formatTimestamp_(lastLikelyActivity)),
     'Last likely IP: ' + escapeHtml_(recipient.lastOpenIp || 'Not yet')
   ];
   if (countedEvents.length) {
@@ -421,6 +421,18 @@ function collectEventsForMessage_(detail) {
   });
 
   return events;
+}
+
+function formatTimestamp_(value) {
+  if (!value || value === 'Not yet') {
+    return 'Not yet';
+  }
+
+  try {
+    return Utilities.formatDate(new Date(value), 'Europe/London', 'd MMM yyyy, h:mm:ss a');
+  } catch (error) {
+    return String(value);
+  }
 }
 
 function isCountedEvent_(event) {
