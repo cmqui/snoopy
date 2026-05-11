@@ -12,13 +12,17 @@
     "openid",
     "email"
   ],
+  "urlWhitelist": [
+    "https://snoopy-git-427372076833.europe-west1.run.app"
+  ],
   "addOns": {
     "common": {
       "name": "Snoopy",
       "logoUrl": "https://files.catbox.moe/ix7ntq.jpg",
       "homepageTrigger": {
         "runFunction": "onHomepage"
-      }
+      },
+      "openLinkUrl": "https://iplocation.io"
     },
     "gmail": {
       "contextualTriggers": [
