@@ -31,6 +31,14 @@ const markSentSchema = z.object({
   })),
 });
 
+const selfViewSchema = z.object({
+  trackedMessageId: z.string().uuid(),
+  gmailMessageId: z.string().nullable().optional(),
+  gmailThreadId: z.string().nullable().optional(),
+  viewedAt: z.string().datetime().nullable().optional(),
+  platform: z.string().trim().min(1).nullable().optional(),
+});
+
 export function createApp(input: {
   authMiddleware: express.RequestHandler;
   trackerService: TrackerService;
@@ -98,6 +106,23 @@ export function createApp(input: {
 
       const payload = markSentSchema.parse(request.body);
       const result = await input.trackerService.markSent(user, payload);
+      response.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/messages/self-view", async (request, response, next) => {
+    try {
+      const user = requireAuth(request);
+      const allowlisted = input.allowedUserEmails.has(user.email);
+      await input.trackerService.syncUser(user, allowlisted);
+      if (!allowlisted) {
+        throw new HttpError(403, "User is not allowlisted");
+      }
+
+      const payload = selfViewSchema.parse(request.body);
+      const result = await input.trackerService.recordSelfView(user, payload);
       response.json(result);
     } catch (error) {
       next(error);

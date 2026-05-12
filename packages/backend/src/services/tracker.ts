@@ -15,6 +15,7 @@ import type {
   PixelTokenPayload,
   PrepareTrackedMessageRequest,
   PrepareTrackedMessageResponse,
+  RecordSelfViewRequest,
   RecipientInput,
   ThreadLookupResponse,
   TrackedMessage,
@@ -22,6 +23,9 @@ import type {
   UserRecord,
 } from "../types.js";
 import type { NotificationService } from "./notifier.js";
+
+const SELF_VIEW_PROXY_GRACE_BEFORE_MS = 15 * 1000;
+const SELF_VIEW_PROXY_GRACE_AFTER_MS = 45 * 1000;
 
 export class TrackerService {
   public constructor(
@@ -74,6 +78,10 @@ export class TrackerService {
       ownerUserId: user.id,
       gmailMessageId: null,
       gmailThreadId: request.gmailThreadId ?? null,
+      lastSelfViewedAt: null,
+      lastSelfViewGmailMessageId: null,
+      lastSelfViewGmailThreadId: null,
+      lastSelfViewPlatform: null,
       draftContextType: request.draftContextType,
       subject: request.subject,
       fromEmail: user.email.toLowerCase(),
@@ -211,6 +219,46 @@ export class TrackerService {
     };
   }
 
+  public async recordSelfView(
+    user: AuthenticatedUser,
+    request: RecordSelfViewRequest,
+  ): Promise<MessageSummaryResponse> {
+    const messageWithRecipients = await this.repository.getMessageById(request.trackedMessageId);
+    if (!messageWithRecipients) {
+      throw new HttpError(404, "Tracked message not found");
+    }
+    if (messageWithRecipients.message.ownerUserId !== user.id) {
+      throw new HttpError(403, "Forbidden");
+    }
+
+    const viewedAt = request.viewedAt ?? this.now().toISOString();
+    const updatedMessage: TrackedMessage = {
+      ...messageWithRecipients.message,
+      lastSelfViewedAt: viewedAt,
+      lastSelfViewGmailMessageId: request.gmailMessageId ?? messageWithRecipients.message.lastSelfViewGmailMessageId,
+      lastSelfViewGmailThreadId: request.gmailThreadId ?? messageWithRecipients.message.lastSelfViewGmailThreadId,
+      lastSelfViewPlatform: request.platform ?? messageWithRecipients.message.lastSelfViewPlatform,
+    };
+    await this.repository.updateMessage(updatedMessage);
+
+    const primaryRecipient = messageWithRecipients.recipients[0];
+    if (primaryRecipient) {
+      await suppressRecentOwnerSelfViewProxyEvents(
+        this.repository,
+        updatedMessage,
+        primaryRecipient,
+        viewedAt,
+      );
+    }
+
+    const refreshed = await this.repository.getMessageById(updatedMessage.id);
+    if (!refreshed) {
+      throw new HttpError(404, "Tracked message not found");
+    }
+
+    return buildSummary(this.repository, refreshed.message, refreshed.recipients);
+  }
+
   public async recordOpen(input: {
     trackedMessageId: string;
     trackedRecipientId: string;
@@ -321,6 +369,10 @@ function classifyEventDisposition(input: {
   deliveryPath: DeliveryPath;
   occurredAt: Date;
 }): EventDisposition {
+  if (shouldIgnoreForRecentOwnerSelfView(input.message, input.deliveryPath, input.occurredAt)) {
+    return "ignored_sender_or_prefetch";
+  }
+
   const referenceTimestamp = input.message.sentAt ?? input.message.trackingAppliedAt ?? input.message.createdAt;
   const referenceTime = Date.parse(referenceTimestamp);
   const elapsedMs = Number.isNaN(referenceTime) ? Number.POSITIVE_INFINITY : input.occurredAt.getTime() - referenceTime;
@@ -353,6 +405,24 @@ function classifyEventDisposition(input: {
 
 function countsTowardOpen(disposition: EventDisposition): boolean {
   return disposition === "counted" || disposition === "probable_open";
+}
+
+function shouldIgnoreForRecentOwnerSelfView(
+  message: TrackedMessage,
+  deliveryPath: DeliveryPath,
+  occurredAt: Date,
+): boolean {
+  if (deliveryPath !== "gmail_proxy" || !message.lastSelfViewedAt) {
+    return false;
+  }
+
+  const selfViewTime = Date.parse(message.lastSelfViewedAt);
+  if (Number.isNaN(selfViewTime)) {
+    return false;
+  }
+
+  const deltaMs = occurredAt.getTime() - selfViewTime;
+  return deltaMs >= -SELF_VIEW_PROXY_GRACE_BEFORE_MS && deltaMs <= SELF_VIEW_PROXY_GRACE_AFTER_MS;
 }
 
 async function buildSummary(
@@ -430,4 +500,90 @@ function calculateConfidencePercent(events: OpenEvent[]): number {
 function isUnconfirmedDisposition(disposition: EventDisposition): boolean {
   return disposition === "unconfirmed_gmail_proxy_activity" ||
     disposition === "unconfirmed_privacy_proxy_activity";
+}
+
+async function suppressRecentOwnerSelfViewProxyEvents(
+  repository: TrackingRepository,
+  message: TrackedMessage,
+  recipient: TrackedRecipient,
+  viewedAt: string,
+): Promise<void> {
+  const viewedAtMs = Date.parse(viewedAt);
+  if (Number.isNaN(viewedAtMs)) {
+    return;
+  }
+
+  const events = await repository.listEventsForRecipient(recipient.id);
+  const updatedEvents = events.map((event) => {
+    if (
+      event.deliveryPath !== "gmail_proxy" ||
+      event.disposition !== "probable_open"
+    ) {
+      return event;
+    }
+
+    const eventTimeMs = Date.parse(event.occurredAt);
+    if (Number.isNaN(eventTimeMs)) {
+      return event;
+    }
+
+    const deltaMs = eventTimeMs - viewedAtMs;
+    if (deltaMs < -SELF_VIEW_PROXY_GRACE_BEFORE_MS || deltaMs > SELF_VIEW_PROXY_GRACE_AFTER_MS) {
+      return event;
+    }
+
+    return {
+      ...event,
+      disposition: "ignored_sender_or_prefetch",
+    } satisfies OpenEvent;
+  });
+
+  const changedEvents = updatedEvents.filter((event, index) => event.disposition !== events[index]?.disposition);
+  if (changedEvents.length === 0) {
+    return;
+  }
+
+  for (const event of changedEvents) {
+    await repository.updateOpenEvent(event);
+  }
+
+  const recalculatedRecipient = rebuildRecipientFromEvents(recipient, updatedEvents);
+  await repository.updateRecipient(recalculatedRecipient);
+
+  const recalculatedMessage: TrackedMessage = {
+    ...message,
+    status: calculateMessageStatusFromRecipients([recalculatedRecipient]),
+  };
+  await repository.updateMessage(recalculatedMessage);
+}
+
+function rebuildRecipientFromEvents(
+  recipient: TrackedRecipient,
+  events: OpenEvent[],
+): TrackedRecipient {
+  const countedEvents = events.filter(isCountedTowardOpenEvent);
+  const firstEvent = countedEvents[0] ?? null;
+  const lastEvent = countedEvents[countedEvents.length - 1] ?? null;
+
+  return {
+    ...recipient,
+    firstOpenedAt: firstEvent?.occurredAt ?? null,
+    lastOpenedAt: lastEvent?.occurredAt ?? null,
+    openCount: countedEvents.length,
+    lastOpenIp: lastEvent?.ip ?? null,
+    lastOpenUserAgent: lastEvent?.userAgent ?? null,
+  };
+}
+
+function isCountedTowardOpenEvent(event: OpenEvent): boolean {
+  return event.disposition === "counted" || event.disposition === "probable_open";
+}
+
+function calculateMessageStatusFromRecipients(recipients: TrackedRecipient[]): TrackedMessage["status"] {
+  const openedCount = recipients.filter((recipient) => recipient.firstOpenedAt !== null).length;
+  if (openedCount === 0) {
+    return "sent";
+  }
+
+  return openedCount >= recipients.length ? "fully_opened" : "partially_opened";
 }

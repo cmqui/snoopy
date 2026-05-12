@@ -141,6 +141,10 @@ export class InMemoryTrackingRepository implements TrackingRepository {
     };
   }
 
+  public async updateOpenEvent(event: OpenEvent): Promise<void> {
+    this.events.set(event.id, event);
+  }
+
   public async updateRecipient(recipient: TrackedRecipient): Promise<void> {
     this.recipients.set(recipient.id, recipient);
   }

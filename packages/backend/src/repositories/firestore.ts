@@ -197,6 +197,10 @@ export class FirestoreTrackingRepository implements TrackingRepository {
     });
   }
 
+  public async updateOpenEvent(event: OpenEvent): Promise<void> {
+    await this.collection("open_events").doc(event.id).set(event);
+  }
+
   public async updateRecipient(recipient: TrackedRecipient): Promise<void> {
     await this.collection("tracked_recipients").doc(recipient.id).set(recipient);
   }

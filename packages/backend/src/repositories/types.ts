@@ -32,6 +32,7 @@ export interface TrackingRepository {
   getMessageByRecipientId(recipientId: string): Promise<MessageWithRecipients | null>;
   listMessagesByOwner(ownerUserId: string, status?: TrackedMessage["status"]): Promise<MessageWithRecipients[]>;
   applyOpenEvent(event: OpenEvent, countsTowardOpen: boolean): Promise<OpenEventWriteResult>;
+  updateOpenEvent(event: OpenEvent): Promise<void>;
   updateRecipient(recipient: TrackedRecipient): Promise<void>;
   markRecipientNotificationSent(recipientId: string, sentAt: string): Promise<void>;
   updateMessage(message: TrackedMessage): Promise<void>;

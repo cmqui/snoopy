@@ -39,7 +39,7 @@ export function buildDedupeKey(input: {
   deliveryPath: DeliveryPath;
   disposition: EventDisposition;
 }): string {
-  const bucketMs = input.deliveryPath === "direct" ? 60 * 1000 : 15 * 60 * 1000;
+  const bucketMs = getDedupeBucketMs(input.deliveryPath, input.disposition);
   const timeBucket = Math.floor(input.occurredAt.getTime() / bucketMs);
   const pathKey = input.deliveryPath;
 
@@ -50,6 +50,18 @@ export function buildDedupeKey(input: {
   const normalizedIp = input.ip.trim();
   const normalizedUa = normalizeUserAgent(input.userAgent);
   return `${input.tokenId}:${normalizedIp}:${normalizedUa}:${timeBucket}`;
+}
+
+function getDedupeBucketMs(deliveryPath: DeliveryPath, disposition: EventDisposition): number {
+  if (deliveryPath === "direct") {
+    return 60 * 1000;
+  }
+
+  if (disposition === "probable_open") {
+    return 60 * 1000;
+  }
+
+  return 15 * 60 * 1000;
 }
 
 function normalizeUserAgent(userAgent: string): string {

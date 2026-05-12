@@ -262,6 +262,86 @@ describe("backend app", () => {
     expect(notifier.calls).toHaveLength(0);
   });
 
+  it("suppresses gmail proxy activity around an owner self-view", async () => {
+    const clock = createClock("2026-05-10T00:00:00.000Z");
+    const { app } = createTestServer({ now: clock.now });
+
+    const prepareResponse = await request(app)
+      .post("/api/v1/messages/prepare")
+      .set("x-test-user-email", "allowed@example.com")
+      .send({
+        subject: "Self view",
+        htmlBody: "<p>Self view</p>",
+        recipients: [
+          { email: "recipient@example.com", recipientType: "to" },
+        ],
+        draftContextType: "new",
+      });
+
+    const trackedMessageId = prepareResponse.body.trackedMessageId as string;
+    const token = extractToken(prepareResponse.body.instrumentedHtmlBody as string);
+
+    await request(app)
+      .post("/api/v1/messages/mark-sent")
+      .set("x-test-user-email", "allowed@example.com")
+      .send({
+        trackedMessageId,
+        gmailMessageId: "gmail-message-self-view",
+        gmailThreadId: "thread-self-view",
+        recipients: [
+          { email: "recipient@example.com", recipientType: "to" },
+        ],
+      });
+
+    clock.advanceMs(11_000);
+    await request(app)
+      .get(`/t/${token}.gif`)
+      .set("user-agent", "GoogleImageProxy")
+      .set("x-forwarded-for", "66.249.84.10");
+
+    clock.advanceMs(5_000);
+    const selfViewResponse = await request(app)
+      .post("/api/v1/messages/self-view")
+      .set("x-test-user-email", "allowed@example.com")
+      .send({
+        trackedMessageId,
+        gmailMessageId: "gmail-message-self-view",
+        gmailThreadId: "thread-self-view",
+        viewedAt: clock.now().toISOString(),
+        platform: "WEB",
+      });
+
+    expect(selfViewResponse.status).toBe(200);
+    expect(selfViewResponse.body.status).toBe("sent");
+    expect(selfViewResponse.body.openedRecipientCount).toBe(0);
+
+    clock.advanceMs(20_000);
+    await request(app)
+      .get(`/t/${token}.gif`)
+      .set("user-agent", "GoogleImageProxy")
+      .set("x-forwarded-for", "66.249.84.11");
+
+    clock.advanceMs(30_000);
+    await request(app)
+      .get(`/t/${token}.gif`)
+      .set("user-agent", "GoogleImageProxy")
+      .set("x-forwarded-for", "66.249.84.12");
+
+    const detailResponse = await request(app)
+      .get(`/api/v1/messages/${trackedMessageId}`)
+      .set("x-test-user-email", "allowed@example.com");
+
+    expect(detailResponse.status).toBe(200);
+    expect(detailResponse.body.message.lastSelfViewedAt).toBe("2026-05-10T00:00:16.000Z");
+    expect(detailResponse.body.message.lastSelfViewPlatform).toBe("WEB");
+    expect(detailResponse.body.message.status).toBe("fully_opened");
+    expect(detailResponse.body.recipients[0].openCount).toBe(1);
+    expect(detailResponse.body.recipients[0].events).toHaveLength(3);
+    expect(detailResponse.body.recipients[0].events[0].disposition).toBe("ignored_sender_or_prefetch");
+    expect(detailResponse.body.recipients[0].events[1].disposition).toBe("ignored_sender_or_prefetch");
+    expect(detailResponse.body.recipients[0].events[2].disposition).toBe("probable_open");
+  });
+
   it("ignores immediate draft fetches when a send has not been confirmed", async () => {
     const clock = createClock("2026-05-10T00:00:00.000Z");
     const { app } = createTestServer({ now: clock.now });

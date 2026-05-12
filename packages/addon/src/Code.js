@@ -27,6 +27,7 @@ function onHomepage() {
         .setTitle('Tracked Email Overview')
     )
     .addSection(section)
+    .addSection(buildVersionSection_())
     .build();
 }
 
@@ -77,6 +78,7 @@ function onCompose(e) {
   return [CardService.newCardBuilder()
     .setHeader(CardService.newCardHeader().setTitle('Snoopy Tracking'))
     .addSection(section)
+    .addSection(buildVersionSection_())
     .build()];
 }
 
@@ -148,6 +150,7 @@ function showIpLog(e) {
     CardService.newCardBuilder()
       .setHeader(CardService.newCardHeader().setTitle('Logged IPs'))
       .addSection(section)
+      .addSection(buildVersionSection_())
       .build()
   );
 
@@ -189,6 +192,7 @@ function buildMessageDetailCard_(detail) {
   return CardService.newCardBuilder()
     .setHeader(CardService.newCardHeader().setTitle(subject))
     .addSection(section)
+    .addSection(buildVersionSection_())
     .build();
 }
 
@@ -211,7 +215,7 @@ function fetchTrackedMessageForThread_(threadId) {
 function findTrackedMessageForCurrentContext_(e) {
   var directContext = extractTrackedMessageContextFromCurrentMessage_(e);
   if (directContext && directContext.trackedMessageId) {
-    return maybeMarkSentFromContext_(fetchMessageDetail_(directContext.trackedMessageId), directContext);
+    return maybeSyncTrackedMessageFromContext_(fetchMessageDetail_(directContext.trackedMessageId), directContext);
   }
 
   var threadId = e && e.gmail && e.gmail.threadId;
@@ -221,6 +225,19 @@ function findTrackedMessageForCurrentContext_(e) {
 
   var lookup = fetchTrackedMessageForThread_(threadId);
   return lookup.message || null;
+}
+
+function maybeSyncTrackedMessageFromContext_(detail, context) {
+  var currentDetail = detail;
+  if (!currentDetail || !currentDetail.message) {
+    return currentDetail;
+  }
+
+  if (!currentDetail.message.sentAt) {
+    currentDetail = maybeMarkSentFromContext_(currentDetail, context);
+  }
+
+  return maybeRecordSelfViewFromContext_(currentDetail, context);
 }
 
 function maybeMarkSentFromContext_(detail, context) {
@@ -249,6 +266,22 @@ function maybeMarkSentFromContext_(detail, context) {
   return fetchMessageDetail_(detail.message.id);
 }
 
+function maybeRecordSelfViewFromContext_(detail, context) {
+  if (!detail || !detail.message || !detail.message.sentAt) {
+    return detail;
+  }
+
+  callBackend_('/api/v1/messages/self-view', 'post', {
+    trackedMessageId: detail.message.id,
+    gmailMessageId: context.gmailMessageId,
+    gmailThreadId: context.gmailThreadId,
+    viewedAt: context.viewedAt,
+    platform: context.platform
+  });
+
+  return fetchMessageDetail_(detail.message.id);
+}
+
 function extractTrackedMessageContextFromCurrentMessage_(e) {
   if (!e || !e.gmail || !e.gmail.accessToken || !e.gmail.messageId) {
     return null;
@@ -270,7 +303,9 @@ function extractTrackedMessageContextFromCurrentMessage_(e) {
     trackedMessageId: decodeTrackedMessageIdFromPixelToken_(decodeURIComponent(match[1])),
     gmailMessageId: e.gmail.messageId,
     gmailThreadId: e.gmail.threadId || null,
-    sentAt: message.getDate().toISOString()
+    sentAt: message.getDate().toISOString(),
+    viewedAt: new Date().toISOString(),
+    platform: getClientPlatform_(e)
   };
 }
 
@@ -321,6 +356,18 @@ function getApiBaseUrl_() {
     throw new Error('Missing script property SNOOPY_API_BASE_URL');
   }
   return value.replace(/\/$/, '');
+}
+
+function buildVersionSection_() {
+  return CardService.newCardSection()
+    .addWidget(
+      CardService.newTextParagraph()
+        .setText('<font color="#5f6368">Version ' + escapeHtml_(getAddonVersion_()) + '</font>')
+    );
+}
+
+function getAddonVersion_() {
+  return PropertiesService.getScriptProperties().getProperty('SNOOPY_ADDON_VERSION') || 'dev';
 }
 
 function getComposeRecipients_(e) {
@@ -406,6 +453,10 @@ function getFormInputValue_(e, fieldName) {
   var stringInputs = input && input.stringInputs;
   var values = stringInputs && stringInputs.value;
   return values && values.length ? values[0] : '';
+}
+
+function getClientPlatform_(e) {
+  return (e.commonEventObject && e.commonEventObject.platform) || e.clientPlatform || null;
 }
 
 function collectEventsForMessage_(detail) {

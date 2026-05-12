@@ -27,6 +27,10 @@ export interface TrackedMessage {
   ownerUserId: string;
   gmailMessageId: string | null;
   gmailThreadId: string | null;
+  lastSelfViewedAt: string | null;
+  lastSelfViewGmailMessageId: string | null;
+  lastSelfViewGmailThreadId: string | null;
+  lastSelfViewPlatform: string | null;
   draftContextType: DraftContextType;
   subject: string;
   fromEmail: string;
@@ -101,6 +105,14 @@ export interface MarkSentRequest {
   gmailThreadId?: string | null;
   sentAt?: string | null;
   recipients: RecipientInput[];
+}
+
+export interface RecordSelfViewRequest {
+  trackedMessageId: string;
+  gmailMessageId?: string | null;
+  gmailThreadId?: string | null;
+  viewedAt?: string | null;
+  platform?: string | null;
 }
 
 export interface MessageSummaryResponse {
